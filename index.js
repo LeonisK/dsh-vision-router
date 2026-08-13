@@ -1,0 +1,684 @@
+// dsh-vision-router: turn-level vision routing + an on-demand vision tool.
+//
+// Routing: the turn that contains an image — from a user upload or a mid-turn
+// tool result such as `read_image` — runs entirely on the vision model with
+// raw pixel access; every other turn keeps the session's own model. Failures
+// walk the configured provider/model chain, and when every vision model has
+// failed in one turn the next attempt raises a classified, actionable error.
+//
+// vision_describe(paths?, attachmentIds?, question, json?): converts 1-4
+// images (local files and/or session-uploaded attachments) into a text answer
+// on demand. File access goes through ctx.fs (sandbox-aware), oversized images
+// are downscaled with sharp, results are cached by content hash + question,
+// and an optional JSON mode validates structured output.
+//
+// Proxy: an optional `proxy` config (e.g. http://127.0.0.1:10808) patches the
+// process fetch to route only the `proxyHosts` domains through it; everything
+// else (DeepSeek and the rest) stays on the direct connection.
+
+import { ProxyAgent } from 'undici'
+import z from '@deepseek-ai/schemastery'
+import sharp from 'sharp'
+
+export const name = 'vision-router'
+export const inject = ['tools', 'llm']
+
+export const Config = z.object({
+  provider: z.string().default('openrouter'),
+  model: z.string().default('openai/gpt-5.6-sol'),
+  fallbacks: z.array(z.string()).default([]),
+  providers: z
+    .array(
+      z.object({
+        provider: z.string(),
+        model: z.string(),
+        fallbacks: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
+  routing: z.boolean().default(true),
+  tool: z.boolean().default(true),
+  rewriteImages: z.boolean().default(true),
+  downscale: z.boolean().default(true),
+  downscaleMaxPixels: z.number().step(1).min(1000).default(8000000),
+  cache: z.boolean().default(true),
+  cacheTtlSeconds: z.number().step(1).min(0).default(3600),
+  cacheMaxEntries: z.number().step(1).min(1).default(200),
+  timeoutMs: z.number().step(1).min(1000).max(600000).default(120000),
+  proxy: z.string().default(''),
+  proxyHosts: z.array(z.string()).default(['api.openrouter.ai', 'openrouter.ai']),
+})
+
+export const IMAGE_EXTENSIONS = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+}
+
+export function mediaTypeOf(path) {
+  const match = String(path).toLowerCase().match(/\.([a-z0-9]+)$/)
+  return match ? IMAGE_EXTENSIONS[match[1]] : undefined
+}
+
+export function basenameOf(path) {
+  const parts = String(path).split('/')
+  return parts[parts.length - 1] || undefined
+}
+
+export function blocksHaveImage(content) {
+  if (!Array.isArray(content)) return false
+  for (const block of content) {
+    if (!block) continue
+    if (block.type === 'image') return true
+    if (Array.isArray(block.content) && blocksHaveImage(block.content)) return true
+  }
+  return false
+}
+
+export function eventHasImage(event) {
+  const data = event && event.data
+  if (!data) return false
+  if (blocksHaveImage(data.content)) return true
+  if (data.message && blocksHaveImage(data.message.content)) return true
+  if (Array.isArray(data.inserted)) {
+    for (const item of data.inserted) {
+      if (item && blocksHaveImage(item.content)) return true
+    }
+  }
+  return false
+}
+
+/** Flatten the single-provider shorthand and the multi-provider form into one ordered chain. */
+export function providersOf(config = {}) {
+  const list = []
+  if (Array.isArray(config.providers)) {
+    for (const entry of config.providers) {
+      if (!entry || typeof entry.provider !== 'string' || typeof entry.model !== 'string') continue
+      list.push({ provider: entry.provider, model: entry.model })
+      for (const fallback of entry.fallbacks ?? []) {
+        if (typeof fallback === 'string' && fallback !== '') {
+          list.push({ provider: entry.provider, model: fallback })
+        }
+      }
+    }
+  }
+  if (list.length > 0) return list
+  const provider =
+    typeof config.provider === 'string' && config.provider !== '' ? config.provider : 'openrouter'
+  const models = []
+  if (typeof config.model === 'string' && config.model !== '') models.push(config.model)
+  for (const fallback of config.fallbacks ?? []) {
+    if (typeof fallback === 'string' && fallback !== '') models.push(fallback)
+  }
+  if (models.length === 0) models.push('openai/gpt-5.6-sol')
+  return models.map((model) => ({ provider, model }))
+}
+
+const FAILURE_ADVICE = {
+  region:
+    'the provider rejected the request for this region; route it through a proxy or pick another model',
+  tos: 'the provider refused the request for Terms-of-Service reasons (often a datacenter IP); switch proxy node or model',
+  quota: 'OpenRouter reports insufficient credits (402); top up or switch model/provider',
+  'rate-limit': 'rate limited (429); retry later',
+  network: 'network failure; check connectivity or the proxy',
+}
+
+export function classifyFailure(message) {
+  const text = String(message ?? '')
+  if (/not available in your region|prohibited region|region/i.test(text)) return 'region'
+  if (/terms of service|\btos\b/i.test(text)) return 'tos'
+  if (/insufficient|balance|credits|\b402\b/i.test(text)) return 'quota'
+  if (/\b429\b|rate.?limit/i.test(text)) return 'rate-limit'
+  if (/ECONN|ETIMEDOUT|ENOTFOUND|timed? ?out|network|fetch failed|socket/i.test(text)) return 'network'
+  return 'other'
+}
+
+export function failureAdvice(message) {
+  return FAILURE_ADVICE[classifyFailure(message)]
+}
+
+/**
+ * Rewrite image blocks into text markers that name the durable attachment id,
+ * so a text-only model can later re-examine them via vision_describe.
+ * @returns the rewritten messages and every attachment reference found.
+ */
+export function rewriteImageBlocks(messages) {
+  const attachments = []
+  let anyChanged = false
+  const rewritten = (messages ?? []).map((message) => {
+    if (!message || !Array.isArray(message.content)) return message
+    let changed = false
+    const content = message.content.map((block) => {
+      if (block && block.type === 'image' && block.attachment) {
+        changed = true
+        anyChanged = true
+        attachments.push(block.attachment)
+        const id = block.attachment.attachmentId ?? 'unknown'
+        return {
+          type: 'text',
+          text: `[attached image: ${id}] The current model cannot see images. To examine it, call vision_describe with attachmentIds: ["${id}"] and a specific question.`,
+        }
+      }
+      return block
+    })
+    return changed ? { ...message, content } : message
+  })
+  return { messages: anyChanged ? rewritten : (messages ?? []), attachments }
+}
+
+/** Extract a JSON object/array from model output (tolerates fences and prose). */
+export function extractJson(text) {
+  const source = String(text ?? '')
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = fenced ? fenced[1] : source
+  const start = candidate.search(/[[{]/)
+  if (start === -1) return undefined
+  const trimmed = candidate.slice(start)
+  for (let end = trimmed.length; end > 0; end--) {
+    try {
+      const value = JSON.parse(trimmed.slice(0, end))
+      if (typeof value === 'object' && value !== null) return value
+    } catch {
+      /* keep shrinking */
+    }
+  }
+  return undefined
+}
+
+/** Tiny LRU cache with TTL; keys are opaque strings. */
+export function createCache(maxEntries, ttlMs) {
+  const entries = new Map()
+  return {
+    get(key) {
+      const entry = entries.get(key)
+      if (!entry) return undefined
+      if (entry.expiresAt <= Date.now()) {
+        entries.delete(key)
+        return undefined
+      }
+      entries.delete(key)
+      entries.set(key, entry)
+      return entry.value
+    },
+    set(key, value) {
+      if (entries.has(key)) entries.delete(key)
+      entries.set(key, { value, expiresAt: ttlMs <= 0 ? Infinity : Date.now() + ttlMs })
+      while (entries.size > maxEntries) {
+        const oldest = entries.keys().next().value
+        entries.delete(oldest)
+      }
+    },
+    get size() {
+      return entries.size
+    },
+  }
+}
+
+/** Downscale bytes whose intrinsic pixel count exceeds maxPixels; returns original bytes on failure. */
+export async function downscaleImage(bytes, maxPixels) {
+  try {
+    const image = sharp(bytes, { failOn: 'none' })
+    const meta = await image.metadata()
+    if (!meta.width || !meta.height) return bytes
+    if (meta.width * meta.height <= maxPixels) return bytes
+    const scale = Math.sqrt(maxPixels / (meta.width * meta.height))
+    const width = Math.max(1, Math.round(meta.width * scale))
+    const height = Math.max(1, Math.round(meta.height * scale))
+    const resized = await image.resize({ width, height, fit: 'inside' }).toBuffer()
+    return resized.length > 0 && resized.length < bytes.length ? resized : bytes
+  } catch {
+    return bytes
+  }
+}
+
+/**
+ * Minimal harness-chunk assembler (no dsh imports required). Feeds the raw
+ * `llm/stream` chunk protocol and produces the final text of text blocks.
+ * Terminal failures throw; a `max-tokens` finish returns the partial text.
+ */
+export function createChunkAssembler() {
+  const parts = new Map()
+  const order = []
+  let finishKind
+  let failure
+
+  const push = (chunk) => {
+    if (!chunk || typeof chunk.type !== 'string') return
+    switch (chunk.type) {
+      case 'block-start': {
+        if (!parts.has(chunk.index)) {
+          order.push(chunk.index)
+          parts.set(chunk.index, { type: chunk.blockType, text: '' })
+        }
+        break
+      }
+      case 'text-delta': {
+        const part = parts.get(chunk.index)
+        if (part) part.text += chunk.text ?? ''
+        break
+      }
+      case 'reasoning-delta':
+      case 'tool-call-delta':
+      case 'usage':
+        break
+      case 'block-end': {
+        const part = parts.get(chunk.index)
+        if (part && chunk.block && typeof chunk.block.text === 'string') {
+          part.text = chunk.block.text
+        }
+        break
+      }
+      case 'finish': {
+        const reason = chunk.reason
+        if (reason && (reason.kind === 'error' || reason.kind === 'aborted')) {
+          failure = reason.failure
+        }
+        finishKind = reason && reason.kind ? reason.kind : 'stop'
+        break
+      }
+      case 'error':
+      case 'aborted':
+        failure = chunk.failure
+        break
+      default:
+        break
+    }
+  }
+
+  const finish = () => {
+    if (failure) {
+      throw new Error(failure && failure.message ? failure.message : String(failure))
+    }
+    if (finishKind !== undefined && finishKind !== 'stop' && finishKind !== 'max-tokens') {
+      throw new Error(`vision call finished with "${finishKind}"`)
+    }
+    return order
+      .map((index) => parts.get(index))
+      .filter((part) => part && part.type === 'text')
+      .map((part) => part.text)
+      .join('')
+      .trim()
+  }
+
+  return { push, finish }
+}
+
+async function visionAnswer(llm, options) {
+  const assembler = createChunkAssembler()
+  for await (const chunk of llm.stream(options)) {
+    assembler.push(chunk)
+  }
+  return assembler.finish()
+}
+
+export function apply(ctx, config = {}) {
+  const pairs = providersOf(config)
+  const timeoutMs =
+    Number.isFinite(config.timeoutMs) && config.timeoutMs > 0 ? config.timeoutMs : 120000
+  const routingEnabled = config.routing !== false
+  const toolEnabled = config.tool !== false
+  const rewriteEnabled = config.rewriteImages !== false
+  const downscaleEnabled = config.downscale !== false
+  const downscaleMaxPixels =
+    Number.isFinite(config.downscaleMaxPixels) && config.downscaleMaxPixels > 0
+      ? config.downscaleMaxPixels
+      : 8000000
+  const cacheEnabled = config.cache !== false
+  const cache = createCache(
+    Number.isFinite(config.cacheMaxEntries) ? config.cacheMaxEntries : 200,
+    (Number.isFinite(config.cacheTtlSeconds) ? config.cacheTtlSeconds : 3600) * 1000,
+  )
+  // session -> Map<attachmentId, ref> (uploaded images visible to vision_describe)
+  const sessionAttachments = new WeakMap()
+
+  // ── optional fetch proxy for the vision provider hosts ─────────────────────
+
+  const proxyUrl =
+    typeof config.proxy === 'string' && config.proxy !== '' ? config.proxy : undefined
+  const proxyHosts = Array.isArray(config.proxyHosts)
+    ? config.proxyHosts.filter((host) => typeof host === 'string' && host !== '')
+    : ['api.openrouter.ai', 'openrouter.ai']
+
+  if (proxyUrl !== undefined && proxyHosts.length > 0) {
+    const proxyAgent = new ProxyAgent(proxyUrl)
+    const originalFetch = globalThis.fetch
+    const shouldProxy = (hostname) =>
+      proxyHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))
+    const patchedFetch = (input, init) => {
+      let url
+      try {
+        url = new URL(
+          typeof input === 'string' ? input : input && input.url ? input.url : String(input),
+        )
+      } catch {
+        return originalFetch(input, init)
+      }
+      if (!shouldProxy(url.hostname)) return originalFetch(input, init)
+      return originalFetch(input, { ...(init ?? {}), dispatcher: proxyAgent })
+    }
+    ctx.effect(() => {
+      globalThis.fetch = patchedFetch
+      return () => {
+        globalThis.fetch = originalFetch
+      }
+    }, 'vision-router: proxy fetch')
+  }
+
+  const recordUploadedAttachments = (session, attachments) => {
+    if (!session || !Array.isArray(attachments) || attachments.length === 0) return
+    let map = sessionAttachments.get(session)
+    if (!map) {
+      map = new Map()
+      sessionAttachments.set(session, map)
+    }
+    for (const ref of attachments) {
+      if (ref && ref.attachmentId) map.set(String(ref.attachmentId), ref)
+    }
+  }
+
+  if (routingEnabled) {
+    // session -> { turn, startIndex, hasImage, routed, failures, lastError }
+    const turnState = new WeakMap()
+
+    ctx.on('agent/pre-step', async (payload, next) => {
+      const decision = await next()
+      const session = payload.agent && payload.agent.session
+      if (!session) return decision
+      const events = session.events ?? []
+      const messages = decision.messages ?? payload.messages ?? []
+      const hasImage = messages.some((message) => blocksHaveImage(message && message.content))
+      turnState.set(session, {
+        turn: payload.turn,
+        startIndex: events.length,
+        hasImage,
+        routed: false,
+        failures: 0,
+        lastError: undefined,
+      })
+      if (hasImage && rewriteEnabled && !routingEnabled) {
+        const rewrite = rewriteImageBlocks(messages)
+        recordUploadedAttachments(session, rewrite.attachments)
+        return { ...decision, messages: rewrite.messages }
+      }
+      if (hasImage) {
+        const rewrite = rewriteImageBlocks(messages)
+        recordUploadedAttachments(session, rewrite.attachments)
+      }
+      return decision
+    })
+
+    ctx.on('agent/request', async (payload, next) => {
+      const config0 = await next()
+      const session = payload.agent && payload.agent.session
+      if (!session) return config0
+      const state = turnState.get(session)
+      if (!state || state.turn !== payload.turn) return config0
+      if (!state.hasImage) {
+        const events = session.events ?? []
+        for (let i = state.startIndex; i < events.length; i++) {
+          if (eventHasImage(events[i])) {
+            state.hasImage = true
+            break
+          }
+        }
+      }
+      if (!state.hasImage) return config0
+      const current = pairs[state.failures]
+      if (current === undefined) {
+        const last = state.lastError ?? 'unknown error'
+        throw new Error(
+          `vision-router: every vision model failed for this turn (${last})${
+            failureAdvice(last) ? ` — ${failureAdvice(last)}` : ''
+          }.`,
+        )
+      }
+      if (config0.provider === current.provider) return config0
+      state.routed = true
+      return { ...config0, provider: current.provider, model: current.model }
+    })
+
+    ctx.on('agent/request-error', async (payload, next) => {
+      const result = await next()
+      const session = payload.agent && payload.agent.session
+      if (!session) return result
+      const state = turnState.get(session)
+      if (!state || state.turn !== payload.turn || !state.routed) return result
+      const current = pairs[state.failures]
+      if (current === undefined || payload.provider !== current.provider) return result
+      state.failures += 1
+      state.lastError =
+        payload.failure && payload.failure.message
+          ? payload.failure.message
+          : payload.failure && payload.failure.code
+            ? payload.failure.code
+            : 'unknown error'
+      if (state.failures < pairs.length) {
+        ctx.logger?.warn(
+          'vision-router: %s/%s failed, trying %s/%s next (%s)',
+          current.provider,
+          current.model,
+          pairs[state.failures].provider,
+          pairs[state.failures].model,
+          state.lastError,
+        )
+        // Force one more attempt on the next fallback even for codes the
+        // default retry policy would abort on (region blocks, quota, ToS).
+        return { kind: 'retry' }
+      }
+      return result
+    })
+  }
+
+  if (toolEnabled) {
+    ctx.tools.register({
+      name: 'vision_describe',
+      description:
+        'Look at images with a vision model and answer a question about them. The current ' +
+        'session model cannot see image content, so use this tool to convert images into text ' +
+        'conclusions. Supports comparing multiple images (e.g. a design mock vs an implementation ' +
+        'screenshot). Provide `paths` (absolute local image file paths, png/jpeg/webp/gif) and/or ' +
+        '`attachmentIds` (ids of images the user uploaded in this conversation), 1-4 images in ' +
+        'total. `question` is the question to answer; be specific. Set `json: true` to require a ' +
+        'single valid JSON object as the answer.',
+      parameters: {
+        type: 'object',
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Absolute local image file paths, 1-4 images',
+          },
+          attachmentIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Attachment ids of images uploaded earlier in this conversation',
+          },
+          question: {
+            type: 'string',
+            description:
+              'The question for the vision model, e.g. "compare the two images and list the differences"',
+          },
+          json: {
+            type: 'boolean',
+            description: 'Require the answer to be a single valid JSON object',
+          },
+        },
+        required: ['question'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: value }],
+      },
+      async execute(args, exec) {
+        const attachments = ctx.get('attachments')
+        if (attachments === undefined) {
+          throw new Error(
+            'vision_describe: the durable attachment service is not available in this deployment',
+          )
+        }
+        const fs = ctx.get('fs')
+        const blocks = []
+        const contentIds = []
+
+        const paths = Array.isArray(args.paths) ? args.paths : []
+        const attachmentIds = Array.isArray(args.attachmentIds) ? args.attachmentIds : []
+        if (paths.length + attachmentIds.length === 0 || paths.length + attachmentIds.length > 4) {
+          throw new Error('vision_describe: provide 1-4 images via paths and/or attachmentIds')
+        }
+
+        for (const path of paths) {
+          if (fs === undefined) {
+            throw new Error('vision_describe: the fs service is not available in this deployment')
+          }
+          const mediaType = mediaTypeOf(path)
+          if (mediaType === undefined) {
+            throw new Error(
+              `vision_describe: unsupported image format ${path} (png/jpeg/webp/gif only)`,
+            )
+          }
+          let bytes
+          try {
+            const target = await fs.resolve(path)
+            bytes = await fs.readBytes(target, undefined, 20 * 1024 * 1024)
+          } catch (error) {
+            throw new Error(
+              `vision_describe: failed to read ${path} (${error && error.message ? error.message : String(error)})`,
+            )
+          }
+          if (downscaleEnabled) {
+            const resized = await downscaleImage(bytes, downscaleMaxPixels)
+            if (resized !== bytes) {
+              ctx.logger?.info('vision-router: downscaled %s for the vision call', path)
+            }
+            bytes = resized
+          }
+          let ref
+          try {
+            ref = await attachments.saveImage({
+              data: bytes,
+              mediaType,
+              ...(basenameOf(path) === undefined ? {} : { name: basenameOf(path) }),
+            })
+          } catch (error) {
+            throw new Error(
+              `vision_describe: image ${path} was rejected (${error && error.message ? error.message : String(error)})`,
+            )
+          }
+          contentIds.push(String(ref.attachmentId))
+          blocks.push({ type: 'image', attachment: ref })
+        }
+
+        for (const id of attachmentIds) {
+          const session = exec && exec.agent && exec.agent.session
+          const map = session ? sessionAttachments.get(session) : undefined
+          const ref = map && map.get(String(id))
+          if (ref === undefined) {
+            throw new Error(
+              `vision_describe: unknown attachment id "${id}" (it must come from an image uploaded in this conversation)`,
+            )
+          }
+          let stored
+          try {
+            stored = await attachments.readImage(ref)
+          } catch (error) {
+            throw new Error(
+              `vision_describe: failed to read attachment ${id} (${error && error.message ? error.message : String(error)})`,
+            )
+          }
+          contentIds.push(String(ref.attachmentId))
+          blocks.push({ type: 'image', attachment: stored.ref })
+        }
+
+        const question = String(args.question ?? '')
+        const wantJson = args.json === true
+        const jsonInstruction = wantJson
+          ? '\n\nAnswer with a SINGLE valid JSON object and nothing else (no markdown fences, no prose).'
+          : ''
+        const key = `${pairs.map((pair) => `${pair.provider}:${pair.model}`).join(',')}|${contentIds
+          .sort()
+          .join(',')}|${wantJson ? 'json' : 'text'}|${question}`
+        if (cacheEnabled) {
+          const hit = cache.get(key)
+          if (hit !== undefined) return hit
+        }
+
+        const baseMessages = [
+          {
+            role: 'user',
+            content: [...blocks, { type: 'text', text: question + jsonInstruction }],
+            source: { kind: 'plugin', plugin: 'dsh-vision-router' },
+          },
+        ]
+        const signal = AbortSignal.timeout(timeoutMs)
+        const errors = []
+
+        for (const pair of pairs) {
+          try {
+            let messages = baseMessages
+            let text = await visionAnswer(ctx.llm, {
+              provider: pair.provider,
+              model: pair.model,
+              messages,
+              maxTokens: 4096,
+              signal,
+            })
+            if (wantJson) {
+              for (let attempt = 0; attempt < 2; attempt++) {
+                const parsed = extractJson(text)
+                if (parsed !== undefined) {
+                  const compact = JSON.stringify(parsed)
+                  if (cacheEnabled) cache.set(key, compact)
+                  return compact
+                }
+                if (attempt === 0) {
+                  messages = [
+                    ...baseMessages,
+                    {
+                      role: 'user',
+                      content: [
+                        {
+                          type: 'text',
+                          text: 'That output was not valid JSON. Respond with ONLY a valid JSON object now.',
+                        },
+                      ],
+                      source: { kind: 'plugin', plugin: 'dsh-vision-router' },
+                    },
+                  ]
+                  text = await visionAnswer(ctx.llm, {
+                    provider: pair.provider,
+                    model: pair.model,
+                    messages,
+                    maxTokens: 4096,
+                    signal,
+                  })
+                }
+              }
+              const fallback = `vision_describe: the model did not produce valid JSON. Raw output:\n${text.slice(0, 2000)}`
+              if (cacheEnabled) cache.set(key, fallback)
+              return fallback
+            }
+            if (text !== '') {
+              if (cacheEnabled) cache.set(key, text)
+              return text
+            }
+            const empty = '(the vision model returned empty content)'
+            if (cacheEnabled) cache.set(key, empty)
+            return empty
+          } catch (error) {
+            const message = error && error.message ? error.message : String(error)
+            errors.push(`${pair.provider}/${pair.model}: ${message}`)
+            ctx.logger?.warn('vision-router: vision_describe fallback: %s', message)
+          }
+        }
+        const last = errors.length > 0 ? errors[errors.length - 1] : 'unknown error'
+        return (
+          `All vision models failed: ${errors.join(' | ')}.` +
+          (failureAdvice(last) ? ` ${failureAdvice(last)}.` : '')
+        )
+      },
+    })
+  }
+}

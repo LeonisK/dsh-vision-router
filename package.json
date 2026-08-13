@@ -1,0 +1,41 @@
+{
+  "name": "dsh-vision-router",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: turn-level vision routing with provider fallback chains, a cached vision_describe tool with JSON output and image downscaling, and optional per-host proxy support.",
+  "license": "LGPL-3.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "vision",
+    "multimodal",
+    "openrouter",
+    "image",
+    "plugin"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": ">=3.18.0",
+    "sharp": "^0.34.0",
+    "undici": ">=6.15.0"
+  },
+  "scripts": {
+    "test": "node --test tests/core.test.js"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp"
+    ]
+  }
+}
