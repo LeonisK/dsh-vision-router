@@ -15,6 +15,10 @@ import {
   downscaleImage,
   toOpenAIContent,
   callOpenAICompatible,
+  cacheKeyFor,
+  adapterAvailable,
+  httpProvidersOf,
+  DEFAULT_HTTP_PROVIDERS,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -275,4 +279,38 @@ test('callOpenAICompatible surfaces non-ok responses as errors', async () => {
   } finally {
     globalThis.fetch = original
   }
+})
+
+test('adapterAvailable reports registered adapters only', () => {
+  const llm = {
+    registration(provider) {
+      if (provider === 'nope') throw new Error('NO_ADAPTER')
+      return {}
+    },
+  }
+  assert.equal(adapterAvailable(llm, 'openrouter'), true)
+  assert.equal(adapterAvailable(llm, 'nope'), false)
+})
+
+test('cacheKeyFor covers chains, content, mode and question', () => {
+  const base = {
+    pairs: [{ provider: 'p', model: 'm' }],
+    httpProviders: [{ name: 'ovh', model: 'qwen' }],
+    contentIds: ['b', 'a'],
+    wantJson: false,
+    question: 'q',
+  }
+  const k1 = cacheKeyFor(base)
+  assert.equal(k1, 'p:m,http:ovh/qwen|a,b|text|q')
+  assert.equal(cacheKeyFor({ ...base, wantJson: true }), 'p:m,http:ovh/qwen|a,b|json|q')
+  assert.equal(cacheKeyFor({ ...base, httpProviders: [] }), 'p:m|a,b|text|q')
+  assert.equal(cacheKeyFor({ ...base, contentIds: ['b'] }), 'p:m,http:ovh/qwen|b|text|q')
+})
+
+test('httpProvidersOf falls back to the built-in default unless disabled', () => {
+  assert.equal(httpProvidersOf({}), DEFAULT_HTTP_PROVIDERS)
+  assert.deepEqual(httpProvidersOf({}, false), [])
+  const custom = [{ name: 'x', baseURL: 'https://x/v1', model: 'm' }]
+  assert.deepEqual(httpProvidersOf({ httpProviders: custom }), custom)
+  assert.deepEqual(httpProvidersOf({ httpProviders: custom }, false), custom)
 })

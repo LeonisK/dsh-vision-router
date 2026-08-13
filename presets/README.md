@@ -5,7 +5,7 @@
 **仓库绝不内置任何第三方 Key**。
 
 - `dashscope.yaml` —— 阿里云百炼，大陆直连，新用户每系列 100 万 token/90 天（推荐首选）
-- `zai.yaml` —— 智谱 bigmodel.cn，`glm-4.6v-flash` 永久免费
+- `zhipu.yaml` —— 智谱 bigmodel.cn，`glm-4.6v-flash` 永久免费（provider key 用 `zhipu`，避免与 pi-ai 内置目录里的 `zai` 编码端点冲突）
 - `siliconflow.yaml` —— 硅基流动，¥14 赠金覆盖 Qwen2.5-VL
 - `openrouter.yaml` —— OpenRouter 免费模型（50 次/天，名单会轮换）
 - `ovh.yaml` —— OVHcloud AI Endpoints 匿名层：**无需账号、无需 Key**，匿名额度为每个 IP、每个模型每分钟 2 次；

@@ -184,6 +184,7 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 | `proxy` | `""` | 可选 `http://host:port` 或 `socks://host:port`。 |
 | `proxyHosts` | `api.openrouter.ai`、`openrouter.ai` | 仅这些域名走 `proxy`。 |
 | `httpProviders` | 内置 OVHcloud 匿名端点 | 直连 HTTP 供应商列表（不走 harness llm 服务）；留空 = 用内置免费模型，见下文。 |
+| `freeFallback` | `true` | 未显式配置 `httpProviders` 时启用内置免 Key 免费兜底；`false` 彻底关闭。 |
 
 ### 内置免费模型（免注册、免 Key）
 

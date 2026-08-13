@@ -47,6 +47,7 @@ export const Config = z.object({
   timeoutMs: z.number().step(1).min(1000).max(600000).default(120000),
   proxy: z.string().default(''),
   proxyHosts: z.array(z.string()).default(['api.openrouter.ai', 'openrouter.ai']),
+  freeFallback: z.boolean().default(true),
   httpProviders: z
     .array(
       z.object({
@@ -227,6 +228,25 @@ export function createCache(maxEntries, ttlMs) {
   }
 }
 
+/** True when the harness llm service has a registered adapter for the provider route. */
+export function adapterAvailable(llm, provider) {
+  try {
+    llm.registration(provider)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Stable cache key for vision_describe answers: chains + content + question + mode. */
+export function cacheKeyFor({ pairs, httpProviders, contentIds, wantJson, question }) {
+  const chains = [
+    ...(pairs ?? []).map((pair) => `${pair.provider}:${pair.model}`),
+    ...(httpProviders ?? []).map((provider) => `http:${provider.name}/${provider.model}`),
+  ]
+  return `${chains.join(',')}|${[...(contentIds ?? [])].sort().join(',')}|${wantJson ? 'json' : 'text'}|${question}`
+}
+
 /** Downscale bytes whose intrinsic pixel count exceeds maxPixels; returns original bytes on failure. */
 export async function downscaleImage(bytes, maxPixels) {
   try {
@@ -260,13 +280,13 @@ export const DEFAULT_HTTP_PROVIDERS = [
   },
 ]
 
-export function httpProvidersOf(config) {
+export function httpProvidersOf(config, allowDefault = true) {
   if (Array.isArray(config.httpProviders) && config.httpProviders.length > 0) {
     return config.httpProviders.filter(
       (p) => p && typeof p.baseURL === 'string' && typeof p.model === 'string',
     )
   }
-  return DEFAULT_HTTP_PROVIDERS
+  return allowDefault ? DEFAULT_HTTP_PROVIDERS : []
 }
 
 /** Convert harness image/text blocks plus resolved image bytes into OpenAI wire content. */
@@ -421,7 +441,7 @@ export function apply(ctx, config = {}) {
     Number.isFinite(config.cacheMaxEntries) ? config.cacheMaxEntries : 200,
     (Number.isFinite(config.cacheTtlSeconds) ? config.cacheTtlSeconds : 3600) * 1000,
   )
-  const httpProviders = httpProvidersOf(config)
+  const httpProviders = httpProvidersOf(config, config.freeFallback !== false)
   const resolveCredential = async (ref) => {
     const credentials = ctx.get('credentials')
     if (credentials === undefined) return undefined
@@ -433,6 +453,8 @@ export function apply(ctx, config = {}) {
   }
   // session -> Map<attachmentId, ref> (uploaded images visible to vision_describe)
   const sessionAttachments = new WeakMap()
+  // secondary index by session id string (agent.session object identity can change across turns)
+  const sessionAttachmentsById = new Map()
 
   // ── optional fetch proxy for the vision provider hosts ─────────────────────
 
@@ -474,22 +496,55 @@ export function apply(ctx, config = {}) {
       map = new Map()
       sessionAttachments.set(session, map)
     }
+    let byId
+    if (session.id !== undefined) {
+      byId = sessionAttachmentsById.get(String(session.id))
+      if (!byId) {
+        byId = new Map()
+        sessionAttachmentsById.set(String(session.id), byId)
+      }
+    }
     for (const ref of attachments) {
-      if (ref && ref.attachmentId) map.set(String(ref.attachmentId), ref)
+      if (ref && ref.attachmentId) {
+        map.set(String(ref.attachmentId), ref)
+        byId?.set(String(ref.attachmentId), ref)
+      }
     }
   }
 
-  if (routingEnabled) {
-    // session -> { turn, startIndex, hasImage, routed, failures, lastError }
-    const turnState = new WeakMap()
+  const lookupAttachment = (session, id) => {
+    const byId = session && session.id !== undefined
+      ? sessionAttachmentsById.get(String(session.id))
+      : undefined
+    if (byId !== undefined) {
+      const hit = byId.get(String(id))
+      if (hit !== undefined) return hit
+    }
+    const map = session ? sessionAttachments.get(session) : undefined
+    return map ? map.get(String(id)) : undefined
+  }
 
-    ctx.on('agent/pre-step', async (payload, next) => {
-      const decision = await next()
-      const session = payload.agent && payload.agent.session
-      if (!session) return decision
+  // session -> { turn, startIndex, hasImage, routed, failures, lastError }
+  const turnState = new WeakMap()
+
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next()
+    if (decision && decision.kind === 'reject') return decision
+    const session = payload.agent && payload.agent.session
+    if (!session) return decision
+    const messages = decision.messages ?? payload.messages ?? []
+    const hasImage = messages.some((message) => blocksHaveImage(message && message.content))
+    if (hasImage) {
+      const rewrite = rewriteImageBlocks(messages)
+      recordUploadedAttachments(session, rewrite.attachments)
+      // With routing disabled, rewrite uploaded image blocks into attachment
+      // markers so the text-only model can still query them via vision_describe.
+      if (rewriteEnabled && !routingEnabled) {
+        return { ...decision, messages: rewrite.messages }
+      }
+    }
+    if (routingEnabled) {
       const events = session.events ?? []
-      const messages = decision.messages ?? payload.messages ?? []
-      const hasImage = messages.some((message) => blocksHaveImage(message && message.content))
       turnState.set(session, {
         turn: payload.turn,
         startIndex: events.length,
@@ -498,18 +553,11 @@ export function apply(ctx, config = {}) {
         failures: 0,
         lastError: undefined,
       })
-      if (hasImage && rewriteEnabled && !routingEnabled) {
-        const rewrite = rewriteImageBlocks(messages)
-        recordUploadedAttachments(session, rewrite.attachments)
-        return { ...decision, messages: rewrite.messages }
-      }
-      if (hasImage) {
-        const rewrite = rewriteImageBlocks(messages)
-        recordUploadedAttachments(session, rewrite.attachments)
-      }
-      return decision
-    })
+    }
+    return decision
+  })
 
+  if (routingEnabled) {
     ctx.on('agent/request', async (payload, next) => {
       const config0 = await next()
       const session = payload.agent && payload.agent.session
@@ -535,6 +583,10 @@ export function apply(ctx, config = {}) {
           }.`,
         )
       }
+      // Never route to a provider whose adapter is not registered in this
+      // deployment — falling through keeps the session on its own model
+      // instead of failing the turn with NO_ADAPTER.
+      if (!adapterAvailable(ctx.llm, current.provider)) return config0
       if (config0.provider === current.provider) return config0
       state.routed = true
       return { ...config0, provider: current.provider, model: current.model }
@@ -674,8 +726,7 @@ export function apply(ctx, config = {}) {
 
         for (const id of attachmentIds) {
           const session = exec && exec.agent && exec.agent.session
-          const map = session ? sessionAttachments.get(session) : undefined
-          const ref = map && map.get(String(id))
+          const ref = lookupAttachment(session, String(id))
           if (ref === undefined) {
             throw new Error(
               `vision_describe: unknown attachment id "${id}" (it must come from an image uploaded in this conversation)`,
@@ -698,9 +749,14 @@ export function apply(ctx, config = {}) {
         const jsonInstruction = wantJson
           ? '\n\nAnswer with a SINGLE valid JSON object and nothing else (no markdown fences, no prose).'
           : ''
-        const key = `${pairs.map((pair) => `${pair.provider}:${pair.model}`).join(',')}|${contentIds
-          .sort()
-          .join(',')}|${wantJson ? 'json' : 'text'}|${question}`
+        const usablePairs = pairs.filter((pair) => adapterAvailable(ctx.llm, pair.provider))
+        const key = cacheKeyFor({
+          pairs,
+          httpProviders,
+          contentIds,
+          wantJson,
+          question,
+        })
         if (cacheEnabled) {
           const hit = cache.get(key)
           if (hit !== undefined) return hit
@@ -716,7 +772,7 @@ export function apply(ctx, config = {}) {
         const signal = AbortSignal.timeout(timeoutMs)
         const errors = []
 
-        for (const pair of pairs) {
+        for (const pair of usablePairs) {
           try {
             let messages = baseMessages
             let text = await visionAnswer(ctx.llm, {

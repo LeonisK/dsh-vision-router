@@ -183,6 +183,7 @@ Restart `dsh web`.
 | `proxy` | `""` | Optional `http://host:port` or `socks://host:port`. |
 | `proxyHosts` | `api.openrouter.ai`, `openrouter.ai` | Only these hosts go through `proxy`. |
 | `httpProviders` | built-in OVHcloud anonymous endpoint | Direct-HTTP provider list (bypasses the harness llm service); empty = built-in free model below. |
+| `freeFallback` | `true` | Enable the built-in keyless fallback when `httpProviders` is unset; `false` disables it entirely. |
 
 ### Built-in free model (no signup, no key)
 
