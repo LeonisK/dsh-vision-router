@@ -189,8 +189,8 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 
 `vision_describe` 在所有配置的付费/自有模型都失败后，会自动落到**内置的免费视觉端点**——
 [OVHcloud AI Endpoints](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities)
-的匿名层（`Qwen2.5-VL-72B-Instruct`）：**无需注册、无需 Key、无需代理**，
-限额为每个 IP、每个模型每分钟 2 次（免费层为尽力而为，正式高频使用请换成自己的配额）。
+的匿名层（`Qwen2.5-VL-72B-Instruct`）：**无需账号、无需 Key、无需代理**；
+匿名额度为**每个 IP、每个模型每分钟 2 次**（免费层为尽力而为，正式高频使用请换成自己的配额）。
 
 想换掉默认免费端点或加更多直连供应商，用 `httpProviders`（OpenAI 兼容、`apiKeyEnv` 留空即匿名）：
 

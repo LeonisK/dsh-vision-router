@@ -8,7 +8,7 @@
 - `zai.yaml` —— 智谱 bigmodel.cn，`glm-4.6v-flash` 永久免费
 - `siliconflow.yaml` —— 硅基流动，¥14 赠金覆盖 Qwen2.5-VL
 - `openrouter.yaml` —— OpenRouter 免费模型（50 次/天，名单会轮换）
-- `ovh.yaml` —— OVHcloud AI Endpoints 匿名层：**免注册、免 Key**（2 次/分钟/IP）；
+- `ovh.yaml` —— OVHcloud AI Endpoints 匿名层：**无需账号、无需 Key**，匿名额度为每个 IP、每个模型每分钟 2 次；
   该端点已内置为插件的默认 `httpProviders`，通常无需手动配置
 
 用法示例（以 dashscope 为例，合并进 `settings.yaml`）：

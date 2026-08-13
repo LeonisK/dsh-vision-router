@@ -187,8 +187,8 @@ Restart `dsh web`.
 
 When every configured model fails, `vision_describe` falls back to a **built-in free vision
 endpoint** — the anonymous tier of [OVHcloud AI Endpoints](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities)
-(`Qwen2.5-VL-72B-Instruct`): **no registration, no key, no proxy**; limited to 2 requests/min
-per IP per model (best-effort free tier). Override with `httpProviders` (OpenAI-compatible;
+(`Qwen2.5-VL-72B-Instruct`): **no account and no key required, no proxy needed**; the
+anonymous quota is **2 requests per minute per IP per model** (best-effort free tier). Override with `httpProviders` (OpenAI-compatible;
 leave `apiKeyEnv` empty for anonymous):
 
 ```yaml
