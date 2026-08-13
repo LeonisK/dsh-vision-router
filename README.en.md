@@ -2,7 +2,7 @@
 
 **Eyes for text-only agents on DeepSeek Harness.** Route image turns to a vision model — keep DeepSeek for everything else.
 
-**Built-in free vision model (no signup, no key), fully customizable multi-provider chains; one config line, works out of the box.**
+**Built-in free vision fallback (no signup, no key), fully customizable multi-provider chains; one config line, works out of the box.**
 
 [中文](./README.md)
 
