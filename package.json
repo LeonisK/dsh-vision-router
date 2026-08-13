@@ -17,6 +17,7 @@
   "engines": {
     "node": ">=20"
   },
+  "packageManager": "pnpm@11.20.0",
   "keywords": [
     "deepseek-harness",
     "dsh",
