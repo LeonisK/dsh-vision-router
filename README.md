@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/ysr666/dsh-vision-router/blob/main/LICENSE"><img alt="License: LGPL-3.0" src="https://img.shields.io/badge/License-LGPL--3.0-blue.svg"></a>
-  <img alt="Node >=20" src="https://img.shields.io/badge/Node-%3E%3D20-green.svg">
+  <img alt="Node >=22" src="https://img.shields.io/badge/Node-%3E%3D22-green.svg">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DSH-plugin-8A2BE2.svg">
   <a href="https://github.com/ysr666/dsh-vision-router/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/ysr666/dsh-vision-router/ci.yml?branch=main"></a>
   <img alt="npm v0.1.0" src="https://img.shields.io/badge/npm-v0.1.0-orange.svg">
@@ -121,7 +121,11 @@ flowchart TD
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-vision-router
+# 从 GitHub 安装（本仓库）
+dsh plugin --profile web add github:ysr666/dsh-vision-router
+
+# 或 npm 发布后：
+# dsh plugin --profile web add dsh-vision-router
 ```
 
 在 profile 补丁（`$DSH_HOME/profiles/web/cordis.patch.yml`）中加一行：

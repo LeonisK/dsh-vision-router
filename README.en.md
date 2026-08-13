@@ -6,7 +6,7 @@
 
 <p align="center">
   <img alt="License: LGPL-3.0" src="https://img.shields.io/badge/License-LGPL--3.0-blue.svg">
-  <img alt="Node >=20" src="https://img.shields.io/badge/Node-%3E%3D20-green.svg">
+  <img alt="Node >=22" src="https://img.shields.io/badge/Node-%3E%3D22-green.svg">
   <img alt="DSH plugin" src="https://img.shields.io/badge/DSH-plugin-8A2BE2.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-node--test-brightgreen.svg">
 </p>
@@ -123,7 +123,11 @@ flowchart TD
 ## Installation
 
 ```sh
-dsh plugin --profile web add dsh-vision-router
+# from GitHub (this repository)
+dsh plugin --profile web add github:ysr666/dsh-vision-router
+
+# or, once published to npm:
+# dsh plugin --profile web add dsh-vision-router
 ```
 
 Add the row to your profile patch (`$DSH_HOME/profiles/web/cordis.patch.yml`):
@@ -243,19 +247,3 @@ them into the harness waterfalls. Pull requests welcome.
 ## License
 
 [LGPL-3.0](./LICENSE)
-
----
-
-## 中文摘要
-
-给纯文本会话模型（如 DeepSeek）装上"眼睛"的 DeepSeek Harness 插件，完全贴合 dsh
-"一切皆插件"的设计：
-
-- **轮次级路由**：包含图片的那一轮整轮走视觉模型（原生像素，无文字桥损耗），其余轮次留在 DeepSeek；
-- **供应商降级链**：地区限制 / ToS 风控 / 402 额度 / 429 限流 / 网络错误自动换下一个模型（支持多供应商独立链路）；
-- **`vision_describe` 工具**：本地文件与会话内上传附件均可查（1–4 张对比），支持 JSON 结构化输出与结果缓存（内容寻址去重）；
-- **大图自动缩放**（sharp）、**按域名代理**（DeepSeek 保持直连）、错误分类与针对性建议。
-
-安装：`dsh plugin --profile web add dsh-vision-router`，在 profile 补丁中加一行
-`vision-router` 行，重启即可。图片格式仅 png/jpeg/webp/gif，视觉模型需在 OpenRouter
-设置中声明 `input: [text, image]`。LGPL-3.0 许可。
