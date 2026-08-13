@@ -21,7 +21,8 @@
   DeepSeek at no extra cost.
 - A vision model fails? **The next one is tried automatically**, and total failure tells you
   exactly why (region / ToS / quota / rate limit).
-- Configured nothing? **Fine** — a built-in free endpoint (no signup, no key) backs
+- Configured nothing? **Fine** — the built-in OVHcloud vision endpoint requires
+  **no account and no key** (anonymous quota: 2 requests/min per IP per model) and backs
   `vision_describe` out of the box.
 
 ## Why dsh-vision-router
