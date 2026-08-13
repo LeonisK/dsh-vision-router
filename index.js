@@ -25,7 +25,7 @@ export const inject = ['tools', 'llm']
 
 export const Config = z.object({
   provider: z.string().default('openrouter'),
-  model: z.string().default('openai/gpt-5.6-sol'),
+  model: z.string().default('qwen/qwen3-vl-235b-a22b-instruct'),
   fallbacks: z.array(z.string()).default([]),
   providers: z
     .array(
@@ -123,7 +123,7 @@ export function providersOf(config = {}) {
   for (const fallback of config.fallbacks ?? []) {
     if (typeof fallback === 'string' && fallback !== '') models.push(fallback)
   }
-  if (models.length === 0) models.push('openai/gpt-5.6-sol')
+  if (models.length === 0) models.push('qwen/qwen3-vl-235b-a22b-instruct')
   return models.map((model) => ({ provider, model }))
 }
 

@@ -12,7 +12,9 @@
     "index.js",
     "README.md",
     "README.en.md",
-    "LICENSE"
+    "LICENSE",
+    "presets",
+    "docs"
   ],
   "engines": {
     "node": ">=22"

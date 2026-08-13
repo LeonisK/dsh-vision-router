@@ -14,7 +14,22 @@
 
 ---
 
-## 为什么是 dsh-vision-router
+## 一句话版本
+
+- 你想发图给 DeepSeek？**装这个插件，照常用**。发图片的那一轮自动交给视觉模型看原图，看完自动切回来，其余轮次 DeepSeek 一分钱不多花。
+- 一个视觉模型挂了？**自动换下一个**，全挂了会告诉你具体原因（地区限制 / 风控 / 欠费 / 限流）。
+- 什么模型都没配？**没关系**——内置免注册、免 Key 的免费视觉端点兜底，`vision_describe` 开箱即用。
+
+## 优势
+
+1. **看图时真看图**：图片轮由视觉模型读取**原图像素**，不经过"转成文字描述"的中间层，不丢细节、不靠转述。
+2. **日常还是 DeepSeek**：纯文字轮次完全不动，日常体验、成本、上下文都跟没装插件时一样。
+3. **挂了自动换**：地区限制、ToS 风控、402 额度、429 限流、网络错误——自动沿链路换下一个模型。
+4. **开箱即用**：内置免注册免 Key 的免费视觉端点；一行安装 + 补丁一行配置，不碰预设、不改源码。
+5. **随手可查**：`vision_describe` 随时对比 1–4 张图（设计稿 vs 实现截图），支持 JSON 输出、结果缓存、大图自动缩放。
+6. **按需代理**：只把视觉供应商的域名走你的本地代理，DeepSeek 保持直连。
+
+## 为什么贴合 dsh
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的理念是**一切皆插件**：
 能力是 Cordis 行，模型按请求路由，工具共享一个注册表。本插件**正是建立在这些接缝之上**，
@@ -136,9 +151,11 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
       name: 'dsh-vision-router'
       config:
         provider: openrouter
-        model: openai/gpt-5.6-sol
+        # 默认主模型（付费、中国大陆直连可用）；完全省略 config 时，
+        # vision_describe 仍可用内置免费端点兜底，路由则使用默认链。
+        model: qwen/qwen3-vl-235b-a22b-instruct
         fallbacks:
-          - qwen/qwen3-vl-235b-a22b-instruct
+          - openai/gpt-5.6-sol
 ```
 
 重启 `dsh web`。
@@ -152,7 +169,7 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `provider` | `openrouter` | 简写链路的供应商路由。 |
-| `model` | `openai/gpt-5.6-sol` | 主视觉模型（简写形式）。 |
+| `model` | `qwen/qwen3-vl-235b-a22b-instruct` | 主视觉模型（简写形式；付费模型，中国大陆直连可用）。 |
 | `fallbacks` | `[]` | 同一供应商的备用模型（简写形式）。 |
 | `providers` | `[]` | **多供应商形式**：`{ provider, model, fallbacks[] }` 列表，逐条尝试；优先于简写形式。 |
 | `routing` | `true` | 轮次级路由。`false` = 仅工具。 |
@@ -189,9 +206,16 @@ config:
       apiKeyEnv: ZAI_API_KEY
 ```
 
-其他免费额度选择（均需注册领 Key，但中国大陆可直连）：阿里云百炼 `qwen-vl-plus`
-（新用户 100 万 token/90 天）、智谱 `glm-4.6v-flash`（永久免费）、SiliconFlow 硅基流动
-Qwen2.5-VL 系列；海外可选 OpenRouter 的 `google/gemma-4-31b-it:free` 等（免费额度会轮换，以官方为准）。
+其他免费额度选择（均需注册领 Key；**免 Key 的视觉 API 目前只有上述 OVHcloud 匿名层**）：
+
+| 平台 | 免费视觉模型 | 直连 | 说明 |
+|---|---|---|---|
+| 🥇 阿里云百炼 DashScope | `qwen-vl-plus` 等 | ✅ | 新用户每系列 100 万 token/90 天，额度最大（推荐首选） |
+| 🥈 智谱 bigmodel.cn | `glm-4.6v-flash` | ✅ | **永久免费**通用 VLM，唯一长期零成本 |
+| 🥉 SiliconFlow 硅基流动 | `Qwen/Qwen2.5-VL-7B-Instruct` 等 | ✅ | ¥14 赠金覆盖 |
+| OpenRouter（海外） | `google/gemma-4-31b-it:free` 等 | 需代理 | 免费 50 次/天；**免费名单轮换频繁**（`qwen-vl-plus:free`、`llama-4-scout:free` 等已下架） |
+
+以上平台的即插即用配置见 [`presets/`](./presets/) 目录（每套一份 baseURL + 免费模型 id + `apiKeyEnv`，你只需填一个 Key）。完整调研与来源见 [`docs/free-models.zh-CN.md`](./docs/free-models.zh-CN.md)。
 
 ### 多供应商链路
 

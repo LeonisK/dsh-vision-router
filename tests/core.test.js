@@ -126,7 +126,7 @@ test('providersOf flattens the single-provider shorthand', () => {
       { provider: 'openrouter', model: 'm2' },
     ],
   )
-  assert.deepEqual(providersOf({}), [{ provider: 'openrouter', model: 'openai/gpt-5.6-sol' }])
+  assert.deepEqual(providersOf({}), [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }])
 })
 
 test('providersOf flattens the multi-provider form and prefers it', () => {

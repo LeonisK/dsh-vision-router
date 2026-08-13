@@ -14,6 +14,16 @@
 
 ---
 
+## In one sentence each
+
+- Want to send images to DeepSeek? **Install this and keep working.** The turn with an image
+  automatically runs on a vision model with raw pixels, then switches back — text turns stay
+  DeepSeek at no extra cost.
+- A vision model fails? **The next one is tried automatically**, and total failure tells you
+  exactly why (region / ToS / quota / rate limit).
+- Configured nothing? **Fine** — a built-in free endpoint (no signup, no key) backs
+  `vision_describe` out of the box.
+
 ## Why dsh-vision-router
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) is *everything-is-a-plugin*:
@@ -139,9 +149,11 @@ Add the row to your profile patch (`$DSH_HOME/profiles/web/cordis.patch.yml`):
       name: 'dsh-vision-router'
       config:
         provider: openrouter
-        model: openai/gpt-5.6-sol
+        # default primary model (paid, direct-connectable from China); with no
+        # config at all, vision_describe still works on the built-in free endpoint
+        model: qwen/qwen3-vl-235b-a22b-instruct
         fallbacks:
-          - qwen/qwen3-vl-235b-a22b-instruct
+          - openai/gpt-5.6-sol
 ```
 
 Restart `dsh web`.
@@ -155,7 +167,7 @@ Restart `dsh web`.
 | Field | Default | Meaning |
 |---|---|---|
 | `provider` | `openrouter` | Provider route for the shorthand chain. |
-| `model` | `openai/gpt-5.6-sol` | Primary vision model (shorthand). |
+| `model` | `qwen/qwen3-vl-235b-a22b-instruct` | Primary vision model (shorthand; paid, China-direct friendly). |
 | `fallbacks` | `[]` | Fallback models of the same provider (shorthand). |
 | `providers` | `[]` | **Multi-provider form**: list of `{ provider, model, fallbacks[] }`; each entry is tried in order. Takes precedence over the shorthand. |
 | `routing` | `true` | Turn-level routing. `false` = tool only. |
@@ -191,9 +203,18 @@ config:
       apiKeyEnv: ZAI_API_KEY
 ```
 
-Other free tiers (key required, China-direct friendly): Alibaba DashScope `qwen-vl-plus`,
-Zhipu `glm-4.6v-flash` (permanently free), SiliconFlow Qwen2.5-VL; OpenRouter
-`google/gemma-4-31b-it:free` overseas. Free rosters rotate frequently — check the providers.
+Other free tiers (key required; the OVHcloud anonymous tier above is currently the only
+verified keyless vision API):
+
+| Platform | Free vision models | China-direct | Notes |
+|---|---|---|---|
+| 🥇 Alibaba DashScope | `qwen-vl-plus` etc. | ✅ | 1M tokens/series/90 days for new users |
+| 🥈 Zhipu bigmodel.cn | `glm-4.6v-flash` | ✅ | **permanently free** |
+| 🥉 SiliconFlow | `Qwen/Qwen2.5-VL-7B-Instruct` etc. | ✅ | ¥14 credit covers it |
+| OpenRouter (overseas) | `google/gemma-4-31b-it:free` etc. | proxy | 50 req/day; **free roster rotates often** |
+
+Ready-to-merge settings snippets for each platform live in [`presets/`](./presets/); the full
+survey with sources is [`docs/free-models.zh-CN.md`](./docs/free-models.zh-CN.md).
 
 ### Multi-provider chains
 
