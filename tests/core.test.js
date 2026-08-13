@@ -13,6 +13,8 @@ import {
   extractJson,
   createCache,
   downscaleImage,
+  toOpenAIContent,
+  callOpenAICompatible,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -216,4 +218,61 @@ test('downscaleImage shrinks oversized images and keeps small ones', async () =>
 test('downscaleImage returns original bytes for corrupt input', async () => {
   const bytes = Buffer.from('not an image')
   assert.equal(await downscaleImage(bytes, 8000000), bytes)
+})
+
+test('toOpenAIContent converts harness blocks to OpenAI wire content', () => {
+  const ref = { attachmentId: 'a1', mediaType: 'image/png' }
+  const blocks = [
+    { type: 'image', attachment: ref },
+    { type: 'text', text: 'describe' },
+  ]
+  const content = toOpenAIContent(blocks, () => Buffer.from('PNGBYTES'))
+  assert.equal(content[0].type, 'image_url')
+  assert.equal(
+    content[0].image_url.url,
+    `data:image/png;base64,${Buffer.from('PNGBYTES').toString('base64')}`,
+  )
+  assert.deepEqual(content[1], { type: 'text', text: 'describe' })
+})
+
+test('callOpenAICompatible posts keyless when apiKeyEnv is empty', async () => {
+  const original = globalThis.fetch
+  let captured
+  globalThis.fetch = async (url, init) => {
+    captured = { url: String(url), init }
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'OK' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const text = await callOpenAICompatible(
+      { name: 't', baseURL: 'https://example.com/v1/', model: 'm' },
+      [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    )
+    assert.equal(text, 'OK')
+    assert.equal(captured.url, 'https://example.com/v1/chat/completions')
+    assert.equal(captured.init.headers.authorization, undefined)
+    assert.equal(JSON.parse(captured.init.body).stream, false)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('callOpenAICompatible surfaces non-ok responses as errors', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response('{"message":"quota"}', { status: 402, headers: { 'content-type': 'application/json' } })
+  try {
+    await assert.rejects(
+      () =>
+        callOpenAICompatible(
+          { name: 't', baseURL: 'https://example.com/v1', model: 'm' },
+          [{ role: 'user', content: [] }],
+        ),
+      /402/,
+    )
+  } finally {
+    globalThis.fetch = original
+  }
 })

@@ -47,6 +47,17 @@ export const Config = z.object({
   timeoutMs: z.number().step(1).min(1000).max(600000).default(120000),
   proxy: z.string().default(''),
   proxyHosts: z.array(z.string()).default(['api.openrouter.ai', 'openrouter.ai']),
+  httpProviders: z
+    .array(
+      z.object({
+        name: z.string(),
+        baseURL: z.string(),
+        model: z.string(),
+        apiKeyEnv: z.string().default(''),
+        maxTokens: z.number().step(1).min(1).default(4096),
+      }),
+    )
+    .default([]),
 })
 
 export const IMAGE_EXTENSIONS = {
@@ -234,6 +245,86 @@ export async function downscaleImage(bytes, maxPixels) {
 }
 
 /**
+ * Direct OpenAI-compatible HTTP providers (no harness llm service involved).
+ * `httpProviders` is an explicit list; when the config leaves it empty, the
+ * built-in default is the OVHcloud AI Endpoints anonymous layer — a free,
+ * registration-free vision endpoint (2 requests/min/IP, best-effort).
+ */
+export const DEFAULT_HTTP_PROVIDERS = [
+  {
+    name: 'ovh',
+    baseURL: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1',
+    model: 'Qwen2.5-VL-72B-Instruct',
+    apiKeyEnv: '',
+    maxTokens: 4096,
+  },
+]
+
+export function httpProvidersOf(config) {
+  if (Array.isArray(config.httpProviders) && config.httpProviders.length > 0) {
+    return config.httpProviders.filter(
+      (p) => p && typeof p.baseURL === 'string' && typeof p.model === 'string',
+    )
+  }
+  return DEFAULT_HTTP_PROVIDERS
+}
+
+/** Convert harness image/text blocks plus resolved image bytes into OpenAI wire content. */
+export function toOpenAIContent(blocks, bytesOf) {
+  return blocks.map((block) => {
+    if (block && block.type === 'image' && block.attachment) {
+      const bytes = bytesOf(block.attachment)
+      const data = Buffer.from(bytes).toString('base64')
+      return {
+        type: 'image_url',
+        image_url: { url: `data:${block.attachment.mediaType};base64,${data}` },
+      }
+    }
+    return { type: 'text', text: block && typeof block.text === 'string' ? block.text : '' }
+  })
+}
+
+/** One non-streaming OpenAI-compatible chat completion; keyless when apiKeyEnv is empty. */
+export async function callOpenAICompatible(provider, messages, options = {}) {
+  const headers = { 'content-type': 'application/json' }
+  const apiKeyEnv = typeof provider.apiKeyEnv === 'string' ? provider.apiKeyEnv : ''
+  if (apiKeyEnv !== '') {
+    let apiKey = ''
+    if (typeof options.resolveCredential === 'function') {
+      const hit = await options.resolveCredential(apiKeyEnv)
+      if (hit) apiKey = String(hit)
+    }
+    if (apiKey === '' && typeof process !== 'undefined' && process.env) {
+      apiKey = process.env[apiKeyEnv] ?? ''
+    }
+    if (apiKey === '') throw new Error(`http provider "${provider.name}": ${apiKeyEnv} is not set`)
+    headers.authorization = `Bearer ${apiKey}`
+  }
+  const body = {
+    model: provider.model,
+    messages,
+    max_tokens: options.maxTokens ?? provider.maxTokens ?? 4096,
+    stream: false,
+  }
+  const response = await fetch(`${provider.baseURL.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  })
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).slice(0, 300)
+    throw new Error(`http provider "${provider.name}": ${response.status} ${detail}`)
+  }
+  const data = await response.json()
+  const content = data && data.choices && data.choices[0] && data.choices[0].message
+    ? data.choices[0].message.content
+    : undefined
+  if (typeof content !== 'string') throw new Error(`http provider "${provider.name}": unexpected response shape`)
+  return content.trim()
+}
+
+/**
  * Minimal harness-chunk assembler (no dsh imports required). Feeds the raw
  * `llm/stream` chunk protocol and produces the final text of text blocks.
  * Terminal failures throw; a `max-tokens` finish returns the partial text.
@@ -330,6 +421,16 @@ export function apply(ctx, config = {}) {
     Number.isFinite(config.cacheMaxEntries) ? config.cacheMaxEntries : 200,
     (Number.isFinite(config.cacheTtlSeconds) ? config.cacheTtlSeconds : 3600) * 1000,
   )
+  const httpProviders = httpProvidersOf(config)
+  const resolveCredential = async (ref) => {
+    const credentials = ctx.get('credentials')
+    if (credentials === undefined) return undefined
+    try {
+      return (await credentials.resolve(ref))?.value
+    } catch {
+      return undefined
+    }
+  }
   // session -> Map<attachmentId, ref> (uploaded images visible to vision_describe)
   const sessionAttachments = new WeakMap()
 
@@ -673,6 +774,66 @@ export function apply(ctx, config = {}) {
             ctx.logger?.warn('vision-router: vision_describe fallback: %s', message)
           }
         }
+
+        // Direct HTTP providers (built-in keyless OVHcloud by default) are the
+        // final fallbacks: they bypass the harness llm service entirely, so the
+        // anonymous free endpoint works without any credential.
+        for (const provider of httpProviders) {
+          try {
+            // Precompute bytes once per block (attachments.readImage is async).
+            const openAIBlocks = []
+            for (const block of blocks) {
+              if (block.type === 'image' && block.attachment) {
+                const stored = await attachments.readImage(block.attachment)
+                openAIBlocks.push(toOpenAIContent([block], () => stored.data)[0])
+              } else {
+                openAIBlocks.push({ type: 'text', text: block.text })
+              }
+            }
+            const askHttp = async (correction) => {
+              const content = correction === undefined ? openAIBlocks : [{ type: 'text', text: correction }]
+              const answer = await callOpenAICompatible(
+                provider,
+                correction === undefined
+                  ? [{ role: 'user', content }]
+                  : [
+                      { role: 'user', content: openAIBlocks },
+                      { role: 'user', content: [{ type: 'text', text: correction }] },
+                    ],
+                { maxTokens: provider.maxTokens ?? 4096, signal, resolveCredential },
+              )
+              return answer
+            }
+            let text = await askHttp(undefined)
+            if (wantJson) {
+              for (let attempt = 0; attempt < 2; attempt++) {
+                const parsed = extractJson(text)
+                if (parsed !== undefined) {
+                  const compact = JSON.stringify(parsed)
+                  if (cacheEnabled) cache.set(key, compact)
+                  return compact
+                }
+                if (attempt === 0) {
+                  text = await askHttp(
+                    'That output was not valid JSON. Respond with ONLY a valid JSON object now.',
+                  )
+                }
+              }
+              const fallback = `vision_describe: the model did not produce valid JSON. Raw output:\n${text.slice(0, 2000)}`
+              if (cacheEnabled) cache.set(key, fallback)
+              return fallback
+            }
+            if (text !== '') {
+              if (cacheEnabled) cache.set(key, text)
+              return text
+            }
+          } catch (error) {
+            const message = error && error.message ? error.message : String(error)
+            errors.push(`http:${provider.name}/${provider.model}: ${message}`)
+            ctx.logger?.warn('vision-router: http provider fallback: %s', message)
+          }
+        }
+
         const last = errors.length > 0 ? errors[errors.length - 1] : 'unknown error'
         return (
           `All vision models failed: ${errors.join(' | ')}.` +

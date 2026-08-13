@@ -2,6 +2,8 @@
 
 **给 DeepSeek Harness 上的纯文本 Agent 装上"眼睛"。** 图片轮次自动切视觉模型——其余一切留在 DeepSeek。
 
+**内置免费视觉模型（免注册、免 Key），也支持多供应商链路自由定制；一行配置接入，开箱即用。**
+
 [English](./README.en.md)
 
 [![License: LGPL-3.0](https://img.shields.io/badge/License-LGPL--3.0-blue.svg)](https://github.com/ysr666/dsh-vision-router/blob/main/LICENSE)
@@ -164,6 +166,32 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 | `timeoutMs` | `120000` | 单次视觉调用超时（工具路径）。 |
 | `proxy` | `""` | 可选 `http://host:port` 或 `socks://host:port`。 |
 | `proxyHosts` | `api.openrouter.ai`、`openrouter.ai` | 仅这些域名走 `proxy`。 |
+| `httpProviders` | 内置 OVHcloud 匿名端点 | 直连 HTTP 供应商列表（不走 harness llm 服务）；留空 = 用内置免费模型，见下文。 |
+
+### 内置免费模型（免注册、免 Key）
+
+`vision_describe` 在所有配置的付费/自有模型都失败后，会自动落到**内置的免费视觉端点**——
+[OVHcloud AI Endpoints](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities)
+的匿名层（`Qwen2.5-VL-72B-Instruct`）：**无需注册、无需 Key、无需代理**，
+限额为每个 IP、每个模型每分钟 2 次（免费层为尽力而为，正式高频使用请换成自己的配额）。
+
+想换掉默认免费端点或加更多直连供应商，用 `httpProviders`（OpenAI 兼容、`apiKeyEnv` 留空即匿名）：
+
+```yaml
+config:
+  httpProviders:
+    - name: ovh
+      baseURL: https://oai.endpoints.kepler.ai.cloud.ovh.net/v1
+      model: Qwen2.5-VL-72B-Instruct
+    - name: zhipu
+      baseURL: https://open.bigmodel.cn/api/paas/v4
+      model: glm-4.6v-flash
+      apiKeyEnv: ZAI_API_KEY
+```
+
+其他免费额度选择（均需注册领 Key，但中国大陆可直连）：阿里云百炼 `qwen-vl-plus`
+（新用户 100 万 token/90 天）、智谱 `glm-4.6v-flash`（永久免费）、SiliconFlow 硅基流动
+Qwen2.5-VL 系列；海外可选 OpenRouter 的 `google/gemma-4-31b-it:free` 等（免费额度会轮换，以官方为准）。
 
 ### 多供应商链路
 
@@ -194,14 +222,39 @@ config:
 
 ## 方案对比
 
-| | 手动切换模型 | MCP 视觉桥 | dsh-vision-router |
+**一句话讲清区别**：其他 dsh 视觉插件大多"把图片转成文字描述再喂给 DeepSeek"（描述桥，有信息损耗）；
+本插件主打"**图片轮直接交给视觉模型看原图**"（路由桥，像素保真），同时内置免 Key 免费模型兜底。
+
+| | 手动切换模型 | MCP 视觉桥 | 本插件 |
 |---|---|---|---|
 | 像素保真 | ✅ 完整（切换后） | ❌ 只有文字描述 | ✅ 完整，图片轮内 |
 | 自动化 | ❌ | ✅ | ✅ |
 | 日常模型不受影响 | ❌（整会话被换） | ✅ | ✅ |
 | 供应商失败恢复 | ❌ | ❌ | ✅ 降级链 |
 | 可复用的结构化查询 | — | 部分 | ✅ JSON 模式 + 缓存 |
+| 免费开箱即用 | ❌ | ❌ | ✅ 内置免 Key 免费端点 |
 | 贴合 dsh 组合体系 | — | 外部服务器 | ✅ 一行插件行 |
+
+**与现有 dsh 社区方案的差异**（均为优秀项目，各有侧重）：
+
+| 项目 | 思路 | 本插件的差异 |
+|---|---|---|
+| [dsh-vision-sidecar](https://github.com/121103qwq/dsh-vision-sidecar) | 图片先经外部 VLM 做 OCR/描述，描述作为会话消息交给 DeepSeek；默认 OVHcloud 匿名端点 | 描述桥方案；本插件提供"原图直看"路由，描述能力由 `vision_describe` 按需替代 |
+| [dsh-vision-proxy](https://github.com/Flyvhidbwo/dsh-vision-proxy) | 包装 provider 路由，请求流里把图片转译成文本再交给 DeepSeek | 转译桥方案；本插件不包装 provider，通过 `agent/request` 瀑布改写路由 |
+| [dsh-vision-provider](https://github.com/libinyam/dsh-vision-provider) | 纯配置 bundle，注册一个 OpenAI 兼容多模态路由 | 配置层思路相同；本插件在此基础上增加自动路由、降级链与工具 |
+| [modlens](https://github.com/liustack/modlens) | 最早的 dsh 视觉插件；复用本机 Codex/OpenCode/Pi 等登录态作为视觉引擎 | 引擎复用思路；本插件自带供应商链，不依赖本机其他 CLI |
+| [dsh-vision-toolkit](https://github.com/Anionex/dsh-vision-toolkit) | 10 个意图化视觉工具（Q&A/OCR/像素校验/UI 还原） | 工具集更全；本插件聚焦"路由 + 一个通用对比工具"，更轻 |
+| [dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision) | `inspect_image` 工具 + `llm/stream` 瀑布图片桥 | 瀑布桥思路相近；本插件多出轮次路由、降级链、缓存与免费端点 |
+
+## 致谢
+
+本插件借鉴了以上全部社区项目的思路，特别是 [dsh-vision-sidecar](https://github.com/121103qwq/dsh-vision-sidecar)
+的"免注册免费端点"发现（OVHcloud AI Endpoints 匿名层）。感谢
+[dsh-vision-proxy](https://github.com/Flyvhidbwo/dsh-vision-proxy)、
+[dsh-vision-provider](https://github.com/libinyam/dsh-vision-provider)、
+[modlens](https://github.com/liustack/modlens)、
+[dsh-vision-toolkit](https://github.com/Anionex/dsh-vision-toolkit)、
+[dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision) 作者们的探索。
 
 ## 常见问题
 
