@@ -4,12 +4,11 @@
 
 [中文](./README.md)
 
-<p align="center">
-  <img alt="License: LGPL-3.0" src="https://img.shields.io/badge/License-LGPL--3.0-blue.svg">
-  <img alt="Node >=22" src="https://img.shields.io/badge/Node-%3E%3D22-green.svg">
-  <img alt="DSH plugin" src="https://img.shields.io/badge/DSH-plugin-8A2BE2.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-node--test-brightgreen.svg">
-</p>
+[![License: LGPL-3.0](https://img.shields.io/badge/License-LGPL--3.0-blue.svg)](https://github.com/ysr666/dsh-vision-router/blob/main/LICENSE)
+[![Node >=22](https://img.shields.io/badge/Node-%3E%3D22-green.svg)]()
+[![DSH plugin](https://img.shields.io/badge/DSH-plugin-8A2BE2.svg)]()
+[![CI](https://img.shields.io/github/actions/workflow/status/ysr666/dsh-vision-router/ci.yml?branch=main)](https://github.com/ysr666/dsh-vision-router/actions/workflows/ci.yml)
+[![npm v0.1.0](https://img.shields.io/badge/npm-v0.1.0-orange.svg)]()
 
 ---
 
