@@ -1,0 +1,35 @@
+name: Star History
+
+on:
+  push:
+    paths:
+      - '.github/workflows/star-history.yml'
+  schedule:
+    - cron: '17 */6 * * *'
+  watch:
+    types: [started]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-history
+  cancel-in-progress: true
+
+jobs:
+  star-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: star-history
+
+      - uses: narayann7/star-history-action@v1
+        with:
+          repos: ${{ github.repository }}
+          output-dir: assets/star-history
+          width: '1000'
+          update-readme: 'false'
+          commit: 'true'
+          commit-message: 'chore: update star history [skip ci]'
