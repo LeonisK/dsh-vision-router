@@ -273,15 +273,21 @@ export function estimateTokens(message) {
   let chars = 0
   let images = 0
   const walk = (block) => {
-    if (!block) return
+    if (block === null || block === undefined) return
+    if (typeof block === 'string') {
+      chars += block.length
+      return
+    }
     if (typeof block.text === 'string') chars += block.text.length
     if (typeof block.arguments === 'string') chars += block.arguments.length
     if (typeof block.name === 'string') chars += block.name.length
     if (block.type === 'image') images += 1
     if (Array.isArray(block.content)) block.content.forEach(walk)
   }
-  if (message && Array.isArray(message.content)) message.content.forEach(walk)
-  return Math.ceil(chars / 3) + images * 1445
+  if (message === null || message === undefined) return 0
+  if (typeof message.content === 'string') chars += message.content.length
+  else if (Array.isArray(message.content)) message.content.forEach(walk)
+  return Math.ceil(chars / 2.5) + images * 1445
 }
 
 /**
@@ -693,7 +699,7 @@ export function apply(ctx, config = {}) {
           } catch {
             /* keep default */
           }
-          const reserve = 8192
+          const reserve = 32768
           const messages =
             estimateTokens(options.messages) > budget - reserve
               ? trimMessagesToBudget(options.messages, Math.max(budget - reserve, 16384))
