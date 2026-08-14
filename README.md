@@ -4,6 +4,7 @@
 
 Send an image and it just works: the agent looks at it through a built-in **free vision chain** (no signup, no key) and a set of pixel-level tools, while DeepSeek stays the brain for every turn. Image turns behave like ordinary tool-calling text turns, so the agent can look, crop, diff, OCR and iterate continuously — instead of receiving one lossy description.
 
+[![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 [![Release v0.2.0](https://img.shields.io/badge/release-v0.2.0-5B4CF0?style=flat-square)](https://github.com/ysr666/dsh-vision-router/releases/tag/v0.2.0)
 [![Verified: 61 tests](https://img.shields.io/badge/verified-61%20tests-2EA44F?style=flat-square)](tests)
 [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-0B7285?style=flat-square)](LICENSE)
