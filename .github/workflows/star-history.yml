@@ -1,19 +1,29 @@
-name: Build Star History Snapshot
+name: Star History
 
 on:
   push:
     paths:
       - '.github/workflows/star-history.yml'
+  schedule:
+    - cron: '17 */6 * * *'
+  watch:
+    types: [started]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: star-history
+  cancel-in-progress: true
+
 jobs:
-  build-star-history:
+  star-history:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: star-history
 
       - uses: narayann7/star-history-action@v1
         with:
@@ -21,47 +31,5 @@ jobs:
           output-dir: assets/star-history
           width: '1000'
           update-readme: 'false'
-          commit: 'false'
-
-      - name: Add chart blocks to both READMEs
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          blocks = {
-              "README.md": '''<!-- star-history-chart -->
-          ## Star History
-
-          <p align="center">
-            <picture>
-              <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg">
-              <img alt="Star history chart" src="assets/star-history/star-history-light.svg" width="100%">
-            </picture>
-          </p>''',
-              "README.zh.md": '''<!-- star-history-chart -->
-          ## Star 趋势
-
-          <p align="center">
-            <picture>
-              <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg">
-              <img alt="Star 历史趋势图" src="assets/star-history/star-history-light.svg" width="100%">
-            </picture>
-          </p>''',
-          }
-
-          for filename, block in blocks.items():
-              path = Path(filename)
-              text = path.read_text(encoding="utf-8")
-              if "<!-- star-history-chart -->" not in text:
-                  path.write_text(text.rstrip() + "\n\n" + block + "\n", encoding="utf-8")
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: star-history-bundle
-          path: |
-            README.md
-            README.zh.md
-            assets/star-history/
-          if-no-files-found: error
+          commit: 'true'
+          commit-message: 'chore: update star history [skip ci]'
