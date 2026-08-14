@@ -1251,7 +1251,9 @@ export function apply(ctx, config = {}) {
         }
         return {
           provider: HTTP_ROUTE,
-          model,
+          // The llm service validates exact model metadata: `id` must equal
+          // the requested model or the call is refused (INVALID_MODEL_INFO).
+          id: model,
           name: entry.name,
           inputModalities: ['text', 'image'],
           context: { contextWindow: 32768 },

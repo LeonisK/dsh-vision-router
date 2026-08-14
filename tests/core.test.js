@@ -828,6 +828,22 @@ test('apply skips the chain route by default: image turns go through the vision 
   assert.ok(adapters.has('deepseek-official-native'))
 })
 
+test('vision-http resolveModel returns exact id metadata (llm service contract)', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  apply(ctx, Config({}))
+  const http = adapters.get('vision-http')
+  assert.ok(http)
+  const resolved = await http.resolveModel('vision-http', 'ovh/Qwen2.5-VL-72B-Instruct')
+  assert.equal(resolved.provider, 'vision-http')
+  assert.equal(resolved.id, 'ovh/Qwen2.5-VL-72B-Instruct')
+  assert.equal(typeof resolved.name, 'string')
+  assert.ok(resolved.name.length > 0)
+  await assert.rejects(
+    () => http.resolveModel('vision-http', 'nope/missing'),
+    /unknown model/,
+  )
+})
+
 test('apply falls back to the visible wrapper when the stock route is still active', async () => {
   const { ctx, adapters } = mockHarnessCtx({ stockRoute: true })
   apply(ctx, Config({
