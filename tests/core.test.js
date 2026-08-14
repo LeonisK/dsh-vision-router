@@ -832,6 +832,7 @@ test('apply falls back to the visible wrapper when the stock route is still acti
   const wrapped = await wrapper.listModels('deepseek-vision')
   assert.deepEqual(wrapped.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
   assert.deepEqual(wrapped[0].inputModalities, ['text', 'image'])
+})
 test('floodFillBackground clears border-connected background pixels', () => {
   // 4x4: white background, black 2x2 square in the middle
   const raw = Buffer.alloc(4 * 4 * 4)
@@ -883,5 +884,4 @@ test('dedupeHttpProviders drops endpoints already covered by vision-http pairs',
     dedupeHttpProviders([{ provider: 'openrouter', model: 'qwen' }], http),
     http,
   )
-})
 })
