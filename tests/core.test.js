@@ -11,6 +11,7 @@ import {
   createChunkAssembler,
   providersOf,
   rewriteImageBlocks,
+  rewriteImagesDeep,
   extractJson,
   createCache,
   downscaleImage,
@@ -585,6 +586,198 @@ test('rewriteHistoryImages returns the same messages array when nothing changed'
   assert.equal(out.attachments.length, 0)
   const empty = rewriteHistoryImages(undefined, new Map())
   assert.equal(empty.messages, undefined)
+})
+
+test('rewriteImagesDeep descends into tool-result content and preserves identity', () => {
+  const ref = { attachmentId: 'img-n', name: 'n.png' }
+  const input = [
+    {
+      type: 'tool-result',
+      toolCallId: 'c1',
+      content: [
+        { type: 'text', text: 'Read image n.png' },
+        { type: 'image', attachment: ref },
+      ],
+    },
+    { type: 'text', text: 'tail' },
+  ]
+  const out = rewriteImagesDeep(input, (block) => ({
+    type: 'text',
+    text: `marker:${block.attachment.attachmentId}`,
+  }))
+  assert.equal(out.changed, true)
+  assert.equal(out.content[0].type, 'tool-result')
+  assert.equal(out.content[0].content[0].type, 'text')
+  assert.equal(out.content[0].content[1].text, 'marker:img-n')
+  assert.equal(out.content[1], input[1])
+  // untouched input keeps the same array identity
+  const untouched = rewriteImagesDeep([{ type: 'text', text: 'x' }], () => ({ type: 'text' }))
+  assert.equal(untouched.changed, false)
+  assert.equal(untouched.content[0].type, 'text')
+})
+
+test('rewriteImageBlocks rewrites images nested inside tool results', () => {
+  const ref = { attachmentId: 'att-2', mediaType: 'image/png' }
+  const { messages, attachments } = rewriteImageBlocks([
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          content: [
+            { type: 'text', text: 'Read image shot.png (1200x800)' },
+            { type: 'image', attachment: ref },
+          ],
+        },
+        { type: 'text', text: '继续' },
+      ],
+    },
+  ])
+  const blocks = messages[0].content
+  const result = blocks[0]
+  assert.equal(result.type, 'tool-result')
+  assert.equal(result.content[0].type, 'text')
+  assert.equal(result.content.filter((b) => b.type === 'image').length, 0)
+  assert.match(result.content[1].text, /att-2/)
+  assert.match(result.content[1].text, /vision_describe/)
+  assert.equal(blocks[1].text, '继续')
+  assert.equal(attachments.length, 1)
+  assert.equal(attachments[0], ref)
+})
+
+test('stripImageBlocks removes nested tool-result images too', () => {
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'c',
+          content: [
+            { type: 'text', text: 't' },
+            { type: 'image', attachment: { attachmentId: 'a' } },
+          ],
+        },
+      ],
+    },
+  ]
+  const out = stripImageBlocks(messages)
+  assert.equal(out[0].content[0].type, 'tool-result')
+  assert.deepEqual(out[0].content[0].content, [{ type: 'text', text: 't' }])
+})
+
+test('collectImageBlocks finds nested tool-result images and dedupes', () => {
+  const ref = { attachmentId: 'img-x', name: 'x.png' }
+  const blocks = collectImageBlocks([
+    { role: 'user', content: [{ type: 'tool-result', content: [{ type: 'image', attachment: ref }] }] },
+    { role: 'user', content: [{ type: 'image', attachment: ref }] },
+  ])
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].id, 'img-x')
+})
+
+test('replaceImageBlocksWithMemory rewrites nested tool-result images', () => {
+  const memory = new Map([['img-1', '一只戴帽子的猫']])
+  const out = replaceImageBlocksWithMemory(
+    [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool-result',
+            content: [
+              { type: 'text', text: 'ok' },
+              { type: 'image', attachment: { attachmentId: 'img-1', name: 'a.png' } },
+            ],
+          },
+        ],
+      },
+    ],
+    memory,
+  )
+  const nested = out[0].content[0].content
+  assert.equal(nested.filter((b) => b.type === 'image').length, 0)
+  assert.ok(nested[1].text.includes('戴帽子的猫'))
+})
+
+test('rewriteHistoryImages rewrites nested tool-result images (UNSUPPORTED_CONTENT guard)', () => {
+  const memory = new Map()
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-read',
+          content: [
+            { type: 'text', text: 'Read image shot.png (1200x800)' },
+            { type: 'image', attachment: { attachmentId: 'img-9', name: 'shot.png' } },
+          ],
+        },
+      ],
+    },
+  ]
+  const out = rewriteHistoryImages(messages, memory)
+  const nested = out.messages[0].content[0].content
+  assert.equal(nested.filter((b) => b.type === 'image').length, 0)
+  assert.ok(nested[1].text.includes('img-9'))
+  assert.ok(nested[1].text.includes('vision_describe'))
+  assert.equal(out.attachments.length, 1)
+  assert.equal(out.attachments[0].attachmentId, 'img-9')
+})
+
+test('stealth stream strips nested tool-result images before the text-only delegate', async () => {
+  let delegateCall
+  const ctx = {
+    logger: { warn() {} },
+    llm: {
+      async *stream(options) {
+        delegateCall = options
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    },
+  }
+  const adapter = createStealthAdapter(ctx, {
+    native: {
+      providerInfo: () => ({ id: 'x', name: 'DeepSeek' }),
+      providerRetryPolicy: () => undefined,
+      listModels: async () => [],
+      resolveModel: async (p, m) => ({ provider: p, id: m, name: m }),
+    },
+    imageMemory: new Map(),
+    delegateProvider: 'deepseek-official-native',
+  })
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          content: [
+            { type: 'text', text: 'Read image x.png' },
+            { type: 'image', attachment: { attachmentId: 'img-7', name: 'x.png' } },
+          ],
+        },
+        { type: 'text', text: '下一轮' },
+      ],
+    },
+  ]
+  for await (const _chunk of adapter.stream({
+    provider: 'deepseek-official',
+    model: 'deepseek-v4-pro',
+    messages,
+  })) {
+    /* drain */
+  }
+  const sent = delegateCall.messages[0]
+  assert.equal(sent.content[0].type, 'tool-result')
+  assert.equal(sent.content[0].content.filter((b) => b.type === 'image').length, 0)
+  assert.ok(sent.content[0].content[1].text.includes('img-7'))
+  assert.ok(sent.content[0].content[1].text.includes('vision_describe'))
+  // the original log keeps the nested image so the Web UI can still show it
+  assert.equal(messages[0].content[0].content[1].type, 'image')
 })
 
 test('lastUserText returns the current user question', () => {
