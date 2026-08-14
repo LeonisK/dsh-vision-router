@@ -1,219 +1,132 @@
 # dsh-vision-router
 
-**给 DeepSeek Harness 上的纯文本 Agent 装上"眼睛"。** 图片轮次自动切视觉模型——其余一切留在 DeepSeek。
+**给 DeepSeek Harness 上的纯文本 Agent 装上"眼睛"和"手"。** 粘贴图片自动识图，其余一切留在 DeepSeek；需要像素级操作（定位、裁剪、对比、OCR、矢量化、抠图、截图）时，一套轻量工具自动就位——零 Python 依赖。
 
-**内置免费视觉模型兜底（免注册、免 Key），也支持多供应商链路自由定制；一行配置接入，开箱即用。**
+**默认视觉模型 = 内置免费端点（免注册、免 Key），开箱即用；也支持 OpenRouter 等付费供应商链路自由定制。**
 
 [English](./README.en.md)
 
 [![License: LGPL-3.0](https://img.shields.io/badge/License-LGPL--3.0-blue.svg)](https://github.com/ysr666/dsh-vision-router/blob/main/LICENSE)
 [![Node >=22](https://img.shields.io/badge/Node-%3E%3D22-green.svg)]()
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-8A2BE2.svg)]()
-[![CI](https://img.shields.io/github/actions/workflow/status/ysr666/dsh-vision-router/ci.yml?branch=main)](https://github.com/ysr666/dsh-vision-router/actions/workflows/ci.yml)
-[![npm v0.1.0](https://img.shields.io/badge/npm-v0.1.0-orange.svg)]()
 
 ---
 
 ## 一句话版本
 
-- 你想发图给 DeepSeek？**装这个插件，照常用**。发图片的那一轮自动交给视觉模型看原图，看完自动切回来，其余轮次 DeepSeek 一分钱不多花。
-- 一个视觉模型挂了？**自动换下一个**，全挂了会告诉你具体原因（地区限制 / 风控 / 欠费 / 限流）。
-- 什么模型都没配？**没关系**——内置免注册、免 Key 的免费视觉端点兜底，`vision_describe` 开箱即用。
+- **发图？照常用。** 图片轮次自动交给视觉模型当"眼睛"（只收图片 + 你的问题，约 1.5k token），整轮思考、工具调用、回答仍由 DeepSeek 完成——成本最低、质量不降。
+- **默认免费。** 不配任何供应商时，视觉请求走内置 OVHcloud 匿名端点（Qwen2.5-VL-72B-Instruct，免注册、免 Key，每 IP 每模型 2 次/分钟）。
+- **模型挂了自动换。** 视觉链内部逐供应商降级，全挂时给出分类明确的错误（地区限制 / 风控 / 额度 / 限流 / 上下文超长）。
+- **要像素级操作？自动就位。** 图片轮次自动挂载 9 个深看工具（定位/裁剪/像素对比/取色/OCR/SVG 矢量化/抠图/HTML 截图/看图问答），无需用户点名；纯文字轮次一个 schema 都不背。
+- **长会话不再爆上下文。** 发图时按目标视觉模型窗口自动裁剪历史；视觉模型永远只收到「图片 + 问题」。
 
 ## 优势
 
 1. **看图时真看图**：图片轮由视觉模型读取**原图像素**，不经过"转成文字描述"的中间层，不丢细节、不靠转述。
-2. **日常还是 DeepSeek**：纯文字轮次完全不动，日常体验、成本、上下文都跟没装插件时一样。
-3. **挂了自动换**：地区限制、ToS 风控、402 额度、429 限流、网络错误——自动沿链路换下一个模型。
-4. **开箱即用**：内置 OVHcloud 免费视觉端点——**无需账号、无需 Key**，匿名额度每个 IP、每个模型每分钟 2 次；一行安装 + 补丁一行配置，不碰预设、不改源码。
-5. **随手可查**：`vision_describe` 随时对比 1–4 张图（设计稿 vs 实现截图），支持 JSON 输出、结果缓存、大图自动缩放。
-6. **按需代理**：只把视觉供应商的域名走你的本地代理，DeepSeek 保持直连。
+2. **日常还是 DeepSeek**：纯文字轮次完全不动，日常体验、成本、上下文都跟没装插件时一样；视觉模型只当"眼睛"，思考与工具调用始终留在主力模型。
+3. **开箱即用、默认免费**：内置 OVHcloud 免费视觉端点——**无需账号、无需 Key**，匿名额度每个 IP、每个模型每分钟 2 次；不配任何供应商也能用。
+4. **挂了自动换**：地区限制、ToS 风控、402 额度、429 限流、网络错误、上下文超长——自动沿链路换下一个模型，全挂才报错并说明原因。
+5. **像素级闭环**：定位（原图像素框）→ 裁剪 → 像素对比（差异率 + 热力图）→ 截图验证，还原 UI 可以"测出来"而不是"看出来"。
+6. **长会话友好**：视觉调用只带「图片 + 问题」，历史按目标模型窗口自动裁剪；识图结果缓存为"图片记忆"，文字轮次也能记得前面发过什么图。
+7. **按需代理**：只把视觉供应商的域名走你的本地代理，DeepSeek 保持直连。
+
+## 方案对比
+
+**一句话讲清区别**：其他 dsh 视觉插件大多"把图片转成文字描述再喂给 DeepSeek"（描述桥，有信息损耗）；
+本插件主打"**图片轮交给视觉模型看原图 + 主力模型当大脑**"（描述走视觉链、思考留在 DeepSeek），
+同时内置免 Key 免费模型兜底与一套像素级深看工具。
+
+| | 手动切换模型 | MCP 视觉桥 | 本插件 |
+|---|---|---|---|
+| 像素保真 | ✅ 完整（切换后） | ❌ 只有文字描述 | ✅ 视觉链读原图像素 |
+| 自动化 | ❌ | ✅ | ✅ 图片轮自动路由 + 工具自动挂载 |
+| 日常模型不受影响 | ❌（整会话被换） | ✅ | ✅ 视觉模型只当眼睛，DeepSeek 当大脑 |
+| 供应商失败恢复 | ❌ | ❌ | ✅ 降级链 + 分类错误 |
+| 可复用的结构化查询 | — | 部分 | ✅ JSON 模式 + 缓存 + 图片记忆 |
+| 像素级深看工具 | ❌ | ❌ | ✅ 定位/裁剪/像素对比/取色/OCR/矢量化/抠图/截图 |
+| 免费开箱即用 | ❌ | ❌ | ✅ 内置免 Key 免费端点 |
+| 贴合 dsh 组合体系 | — | 外部服务器 | ✅ 一行插件行 |
+
+**与现有 dsh 社区方案的差异**（均为优秀项目，各有侧重）：
+
+| 项目 | 思路 | 本插件的差异 |
+|---|---|---|
+| [dsh-vision-sidecar](https://github.com/121103qwq/dsh-vision-sidecar) | 图片先经外部 VLM 做 OCR/描述，描述作为会话消息交给 DeepSeek；默认 OVHcloud 匿名端点 | 描述桥方案；本插件提供"视觉链原图直看 + DeepSeek 思考"，描述能力由 `vision_describe` 按需替代 |
+| [dsh-vision-proxy](https://github.com/Flyvhidbwo/dsh-vision-proxy) | 包装 provider 路由，请求流里把图片转译成文本再交给 DeepSeek | 转译桥方案；本插件不包装 provider，通过 `agent/request` 瀑布改写路由 |
+| [dsh-vision-provider](https://github.com/libinyam/dsh-vision-provider) | 纯配置 bundle，注册一个 OpenAI 兼容多模态路由 | 配置层思路相同；本插件在此基础上增加自动路由、降级链、深看工具与免费默认 |
+| [modlens](https://github.com/liustack/modlens) | 最早的 dsh 视觉插件；复用本机 Codex/OpenCode/Pi 等登录态作为视觉引擎 | 引擎复用思路；本插件自带供应商链，不依赖本机其他 CLI |
+| [dsh-vision-toolkit](https://github.com/Anionex/dsh-vision-toolkit) | 10 个意图化视觉工具（Q&A/OCR/像素校验/UI 还原）+ 渐进 schema 暴露 | 借鉴了其"意图驱动 + 渐进暴露 + 像素闭环"方法论；本插件用 sharp/potrace/tesseract 轻量实现，无需 Python 运行时 |
+| [dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision) | `inspect_image` 工具 + `llm/stream` 瀑布图片桥 | 瀑布桥思路相近；本插件多出轮次路由、降级链、缓存与免费端点 |
 
 ## 为什么贴合 dsh
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的理念是**一切皆插件**：
-能力是 Cordis 行，模型按请求路由，工具共享一个注册表。本插件**正是建立在这些接缝之上**，
-而不是绕过它们：
+能力是 Cordis 行，模型按请求路由，工具共享一个注册表。本插件**正是建立在这些接缝之上**：
 
 | dsh 的能力 | 本插件如何借力 |
 |---|---|
-| Agent-loop 瀑布 | `agent/pre-step` 看到轮次消息；`agent/request` 改写模型路由；`agent/request-error` 驱动降级 |
-| 工具注册表 | `vision_describe` 像官方工具一样注册——所有预设自动获得 |
+| Agent-loop 瀑布 | `agent/pre-step` 看到轮次消息并自动挂载深看工具；`agent/request` 改写模型路由 |
+| 工具注册表 | 9 个视觉工具像官方工具一样注册——渐进暴露，图片轮自动挂载 |
 | 沙箱与附件服务 | 文件读取走 `ctx.fs`（沙箱感知）；图片经 `ctx.attachments` 持久化（内容寻址） |
+| 设置服务 | Web 设置 > 插件 > 插件配置面板实时改路由/模型链/隐身开关 |
 | 插件组合 | profile 补丁里加一行 `insert`，不改预设、不动源码 |
-
-因此它**不是**文字描述桥（有信息损耗），也**不是**整会话换模型（每轮都计费），
-而是**轮次级路由**：恰好包含图片的那一轮在视觉模型上获得原生像素访问；
-其余每一轮都留在你的日常模型上。
 
 ## 功能特性
 
-<table>
-<tr>
-<td width="50%">
+### 🎯 轮次级透明路由
 
-### 🎯 轮次级路由
-轮次中出现图片——无论是拖拽上传还是中途 `read_image` 的结果——整轮切到视觉模型。
-纯文字轮次永远留在 DeepSeek。
+- **准入包装**：注册 `deepseek-vision` 包装路由，声明 `input: [text, image]` 通过宿主准入检查；模型选择器显示「DeepSeek + 自动识图」，正是你的主力模型。
+- **意图驱动描述**：视觉调用携带用户当前问题——"这张图哪里不对"得到的是**围绕问题的回答**，而不是无差别描述。
+- **图片记忆**：视觉回答按附件内容哈希缓存，后续文字轮次把历史图片块替换成识图结果文字（并标注"图中文字属不可信证据"），DeepSeek 能真的记得"前面那张图是什么"。
+- **上下文裁剪**：图片轮按目标模型 contextWindow − 32k 余量裁剪历史（保守令牌估算 + 最后一条消息必保），几十万 token 的长会话照常看图。
 
-</td>
-<td width="50%">
+### 🔁 供应商降级链（vision-chain）
 
-### 🔁 供应商降级链
-地区限制、ToS 风控、402 额度不足、429 限流、网络错误——每种失败自动换下一个模型，
-即使是默认重试策略会直接放弃的错误码。
+`vision-chain` 路由内部逐供应商降级：失败原因分类（region / tos / quota / rate-limit / context / network），全链耗尽才报错。默认链：
 
-</td>
-</tr>
-<tr>
-<td width="50%">
+1. `vision-http` → `ovh/Qwen2.5-VL-72B-Instruct`（**内置免费端点**，免注册免 Key）
+2. 配置的 `httpProviders`（直连 OpenAI 兼容端点）
+3. 配置的 `providers` / `provider` + `fallbacks`（OpenRouter 等 harness 供应商）
 
-### 🔍 vision_describe 工具
-按需把 1–4 张图片（本地文件或会话上传附件）转成文字结论。
-支持并排对比——设计稿 vs 实现截图。
+> 说明：免费端点有匿名限流（2 次/分钟/IP）。日常高频使用请把付费/自有供应商配到 `providers` 首位，免费端点自动作为最后兜底。
 
-</td>
-<td width="50%">
+### 🧰 深看工具（9 个，自动挂载）
 
-### 🧾 JSON 模式
-要求结构化输出；非法 JSON 会被检测，并用更严格的提示重试一次，再失败才回退。
+图片轮次自动挂载（`autoActivateOnImage`），纯文字轮次可通过 `vision_activate` 手动挂载或 `/vision-tools` 加载 skill。全部基于 sharp / potrace / tesseract / Chrome，**无 Python**：
 
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🖼️ 大图自动缩放
-超过阈值的图片用 `sharp` 自动缩放后再提交，而不是撞上 harness 的准入限制报错。
-
-</td>
-<td width="50%">
-
-### 💾 结果缓存
-答案按"内容寻址图片 id + 问题 + 模型链"缓存（LRU + TTL）。
-同一张截图问两次，第二次零成本。
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🔌 按域名代理
-只把视觉供应商的域名走本地代理（`http://` 或 `socks://`）；
-DeepSeek 与其他请求保持直连。
-
-</td>
-<td width="50%">
-
-### 📎 上传附件复用
-关闭路由时，上传图片会被改写为附件标记，文本模型之后仍可
-通过 `vision_describe` 回看它们。
-
-</td>
-</tr>
-</table>
-
-## 工作原理
-
-```mermaid
-flowchart TD
-    U[用户轮次] --> PS{agent/pre-step<br/>消息里含图片?}
-    PS -- 否 --> TEXT[会话模型<br/>如 DeepSeek]
-    PS -- 是 --> R{agent/request<br/>改写路由}
-    R --> V1[视觉供应商 1<br/>原生像素]
-    V1 -- 失败 --> ERR[agent/request-error<br/>强制重试]
-    ERR --> V2[视觉供应商 2]
-    V2 -- 失败 --> ERR2[... 直到链路耗尽]
-    ERR2 --> E[分类明确的错误提示]
-    V1 -- 成功 --> DONE[整轮留在视觉模型]
-    T[vision_describe 工具] --> C{缓存命中?}
-    C -- 否 --> DS[缩放?] --> LLM[ctx.llm.stream<br/>供应商链路]
-    C -- 是 --> OUT[缓存答案]
-    LLM -- 成功 --> OUT
-    LLM -- 全部失败 --> F[友好失败文本]
-```
-
-## 安装
-
-```sh
-# 从 GitHub 安装（本仓库）
-dsh plugin --profile web add github:ysr666/dsh-vision-router
-
-# 或 npm 发布后：
-# dsh plugin --profile web add dsh-vision-router
-```
-
-在 profile 补丁（`$DSH_HOME/profiles/web/cordis.patch.yml`）中加一行：
-
-```yaml
-- insert:
-    - id: vision-router
-      name: 'dsh-vision-router'
-      config:
-        provider: openrouter
-        # 默认主模型（付费、中国大陆直连可用）；完全省略 config 时，
-        # vision_describe 仍可用内置免费端点兜底，路由则使用默认链。
-        model: qwen/qwen3-vl-235b-a22b-instruct
-        fallbacks:
-          - openai/gpt-5.6-sol
-```
-
-重启 `dsh web`。
-
-> **⚠️ 重要（宿主准入，先于插件）**：harness 在发送消息时会检查**当前会话模型**声明的
-> `inputModalities`——DeepSeek 模型硬编码声明为仅文本，因此**会话模型选 DeepSeek 时拖图发送会被直接拒绝**
-> （提示"当前模型不支持图片"）。本插件无法改写这道检查，解决办法二选一：
->
-> 1. **推荐**：把会话模型切到插件注册的包装路由 **「DeepSeek + 自动识图」（`deepseek-vision`）**——
->    它声明了图片输入（通过准入），模型选择器/右下角显示"DeepSeek-V4-Pro（自动识图）"，正是你的主力模型；
-> 2. 或切到任何声明了 `input: [text, image]` 的视觉模型（如 OpenRouter 的
->    `qwen/qwen3-vl-235b-a22b-instruct`）——但右下角会显示该视觉模型名。
->
-> 两种方式下插件都会接管：图片轮留在视觉模型上看原图，纯文字轮自动反向路由回
-> `textProvider`（默认 DeepSeek），日常体验与成本不变。
-
-> **前置条件**：你命名的每个视觉模型都必须存在于 OpenRouter 设置
-> （`$DSH_HOME/settings.yaml` → `llm-pi-ai.providers.openrouter.models`）中，
-> 并声明 `input: [text, image]`，否则 harness 会拒绝给它传图片。
-
-## 配置项
-
-除组合配置外，也可在 Web 的「设置 → 插件 → 插件配置」里用图形化面板调整常用项
-（路由开关、视觉模型链、文本模型、隐身模式等）。注意：`stealth` 在面板里的改动
-需重启 dsh 生效（是否接管官方路由在插件启动时决定）。
-
-| 字段 | 默认值 | 含义 |
+| 工具 | 干什么 | 产物 |
 |---|---|---|
-| `provider` | `openrouter` | 简写链路的供应商路由。 |
-| `model` | `qwen/qwen3-vl-235b-a22b-instruct` | 主视觉模型（简写形式；付费模型，中国大陆直连可用）。 |
-| `fallbacks` | `[]` | 同一供应商的备用模型（简写形式）。 |
-| `providers` | `[]` | **多供应商形式**：`{ provider, model, fallbacks[] }` 列表，逐条尝试；优先于简写形式。 |
-| `routing` | `true` | 轮次级路由。`false` = 仅工具。 |
-| `reverseRouting` | `true` | 文字轮反向路由回 `textProvider`（配合视觉入口模型使用，见下）。 |
-| `wrapperRoute` | `deepseek-vision` | 注册的包装路由名（模型选择器里显示为"DeepSeek + 自动识图"）；置空字符串可关闭。 |
-| `textProvider` | `deepseek-official` / `deepseek-v4-pro` | 纯文字轮次使用的模型（你的日常模型）。 |
-| `tool` | `true` | 注册 `vision_describe`。`false` = 仅路由。 |
-| `rewriteImages` | `true` | 关闭路由时，把上传图片块改写为附件标记。 |
-| `downscale` | `true` | 超过 `downscaleMaxPixels` 的图片自动缩放。 |
-| `downscaleMaxPixels` | `8000000` | 工具图片的像素预算（约 8MP）。 |
-| `cache` | `true` | 缓存 `vision_describe` 答案。 |
-| `cacheTtlSeconds` | `3600` | 缓存有效期（`0` = 永久）。 |
-| `cacheMaxEntries` | `200` | LRU 容量。 |
-| `timeoutMs` | `120000` | 单次视觉调用超时（工具路径）。 |
-| `proxy` | `""` | 可选 `http://host:port` 或 `socks://host:port`。 |
-| `proxyHosts` | `api.openrouter.ai`、`openrouter.ai` | 仅这些域名走 `proxy`。 |
-| `httpProviders` | 内置 OVHcloud 匿名端点 | 直连 HTTP 供应商列表（不走 harness llm 服务）；留空 = 用内置免费模型，见下文。 |
-| `freeFallback` | `true` | 未显式配置 `httpProviders` 时启用内置免 Key 免费兜底；`false` 彻底关闭。 |
-| `stealth` | `true` | 尝试接管 `deepseek-official` 路由（"隐身模式"，需配合禁用官方 `llm-deepseek` 行，见下）。`false` 直接关闭。 |
+| `vision_describe` | 看图问答 / 多图对比 / JSON 模式 | — |
+| `vision_ground` | 定位目标 → **原图像素框 x1/y1/x2/y2** | 红框标注 PNG（可选） |
+| `vision_crop` | 按像素框裁剪放大 | PNG |
+| `vision_pixel_diff` | 双图逐像素对比：差异率 + 8×8 网格最差区域 | 红色热力图 PNG + JSON 报告 |
+| `vision_colors` | 主色调量化（色值 + 占比） | — |
+| `vision_ocr` | 文字识别：本地 tesseract（chi_sim+eng）优先，视觉模型兜底 | — |
+| `vision_trace` | SVG 矢量化（potrace 海报化，图标/logo） | SVG |
+| `vision_extract_foreground` | 抠图（边缘洪泛填充，纯色背景） | 透明 PNG |
+| `vision_html_screenshot` | 本地 HTML 页面截图（系统 Chrome headless） | PNG |
 
-## 隐身模式（stealth）
+**闭环工作流**：参考图 → `vision_html_screenshot`（实现截图）→ `vision_pixel_diff`（量化差异）→ `vision_ground` → `vision_crop` → `vision_describe`（定位差异细节）→ 改代码 → 再截图验证，直到差异归零。
+
+### 📦 产物交付
+
+所有产物写入会话工作区 `<cwd>/.dsh-vision-router/artifacts/`（可配置），工具结果返回绝对路径、尺寸与字节数；命名规则 `<图片名>-<操作>.png/svg/json`。
+
+### 🧩 渐进式 schema 暴露
+
+- 平时只挂一个零参数引导工具 `vision_activate`（schema 极小）；
+- 图片轮次**自动挂载**全部 9 个工具（首个模型步骤即可用，零往返），并注入一句一次性使用提示；
+- 注册 `vision-tools` skill（模型可主动加载，用户可 `/vision-tools`）；
+- `progressiveTools: false` 可退回"全部常驻"。
+
+### 🕶️ 隐身模式（stealth）
 
 **默认安装（什么都不改）完全安全。** 官方 `llm-deepseek` 行在场时，接管注册必然抛出
-`DUPLICATE_ADAPTER`，插件捕获后自动回退为上文"DeepSeek + 自动识图"包装路由的可见行为，
+`DUPLICATE_ADAPTER`，插件捕获后自动回退为"DeepSeek + 自动识图"包装路由的可见行为，
 文本轮次与安装本插件之前逐字节相同。stealth 只有在用户**主动禁用官方行**时才生效。
 
 若想要"模型选择器看起来和原来一模一样"（官方 `DeepSeek` 组、同样的模型名，只是条目背后
-变成自动识图包装），在你的 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）加入：
+变成自动识图包装），在 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）加入：
 
 ```yaml
 - id: llm-deepseek
@@ -232,145 +145,149 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 DeepSeek。**删除补丁层里上面 3 行即可立即恢复官方路由。** 插件本身永远不会替你禁用
 官方行，也不会在官方行在场时覆盖它。
 
+## 工作原理
+
+```mermaid
+flowchart TD
+    U[用户轮次] --> PS{agent/pre-step<br/>消息里含图片?}
+    PS -- 是 --> AUTO[自动挂载深看工具<br/>+ 一次性使用提示]
+    PS -- 否 --> TEXT[会话模型<br/>DeepSeek 文字轮]
+    AUTO --> R{agent/request 路由}
+    R --> W[wrapper / stealth 路由<br/>deepseek-vision 或 deepseek-official]
+    W --> DES[视觉链: 图片 + 用户问题<br/>逐供应商降级]
+    DES --> MEM[图片记忆: 描述缓存]
+    MEM --> SUB[图片块替换为识图结果文字]
+    SUB --> DS[DeepSeek 完整 agent 轮<br/>思考/工具/回答]
+    DS --> T2[工具轮次后续请求<br/>回包装路由, 复用记忆]
+```
+
+关键点：**视觉模型只当眼睛（每次约 1.5k token），DeepSeek 始终当大脑**。这同时解决三件事——准入检查（包装路由声明图片输入）、质量（主力模型干活）、token 经济（视觉模型不看整段历史）。
+
+## 安装
+
+```sh
+# 从 GitHub 安装（本仓库）
+dsh plugin --profile web add github:ysr666/dsh-vision-router
+```
+
+重启 `dsh web`。**零配置即可用**：默认视觉模型是内置免费端点（免注册、免 Key）。
+
+> **⚠️ 重要（宿主准入，先于插件）**：harness 发送消息前检查**当前会话模型**声明的
+> `inputModalities`——DeepSeek 官方模型硬编码声明为仅文本，因此**会话模型选普通 DeepSeek 时拖图会被直接拒绝**。解决办法二选一：
+>
+> 1. **推荐**：把会话模型切到「**DeepSeek + 自动识图**」（`deepseek-vision` 包装路由）——
+>    它声明了图片输入（通过准入），选择器/右下角显示"DeepSeek-V4-Pro（自动识图）"，正是你的主力模型；
+> 2. 或开启**隐身模式**（见上）：禁用官方 `llm-deepseek` 行后，选择器里的 DeepSeek 条目本身就是
+>    自动识图包装，看起来和原来一模一样。
+>
+> 两种方式下插件都会接管：图片轮由视觉链描述，文字轮留在 DeepSeek。
+
+可选：把默认模型设为包装路由（新会话不用手动切）：
+
+```yaml
+# $DSH_HOME/settings.yaml
+agent-default-model:
+  provider: deepseek-vision
+  model: deepseek-v4-pro
+```
+
+## 配置项
+
+插件行 config（全部可选，均可省略；也可在 Web 设置 > 插件 > 插件配置面板实时修改）：
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `provider` | `vision-http` | 简写链路的供应商路由。 |
+| `model` | `ovh/Qwen2.5-VL-72B-Instruct` | 主视觉模型（简写形式；**默认即内置免费端点**）。 |
+| `fallbacks` | `[]` | 同一供应商的备用模型（简写形式）。 |
+| `providers` | `[]` | **多供应商形式**：`{ provider, model, fallbacks[] }` 列表，逐条尝试；优先于简写形式。 |
+| `routing` | `true` | 轮次级路由。`false` = 仅工具。 |
+| `reverseRouting` | `true` | 文字轮反向路由回 `textProvider`。 |
+| `wrapperRoute` | `deepseek-vision` | 包装路由名（选择器显示"DeepSeek + 自动识图"）；置空关闭。 |
+| `chainRoute` | `vision-chain` | 视觉降级链路由名。 |
+| `stealth` | `true` | 尝试接管 `deepseek-official` 路由（"隐身模式"，需配合禁用官方 `llm-deepseek` 行）。 |
+| `textProvider` | `deepseek-official` / `deepseek-v4-pro` | 纯文字轮次使用的模型（你的日常模型）。 |
+| `tool` | `true` | 注册视觉工具；`false` = 仅路由。 |
+| `progressiveTools` | `true` | 渐进式暴露：深看工具不常驻，图片轮自动挂载。 |
+| `autoActivateOnImage` | `true` | 图片轮次自动挂载深看工具 + 一次性使用提示。 |
+| `artifactsDir` | `.dsh-vision-router/artifacts` | 产物目录（相对会话工作区）。 |
+| `rewriteImages` | `true` | 关闭路由时把上传图片块改写为附件标记。 |
+| `downscale` / `downscaleMaxPixels` | `true` / `8000000` | 大图自动缩放与像素预算。 |
+| `cache` / `cacheTtlSeconds` / `cacheMaxEntries` | `true` / `3600` / `200` | 视觉答案缓存。 |
+| `timeoutMs` | `120000` | 单次视觉调用超时。 |
+| `proxy` / `proxyHosts` | `""` / openrouter 域名 | 可选代理（仅指定域名走代理）。 |
+| `httpProviders` | 内置 OVHcloud 匿名端点 | 直连 HTTP 供应商列表（OpenAI 兼容、`apiKeyEnv` 留空即匿名）。 |
+| `freeFallback` | `true` | 未显式配置 `httpProviders` 时启用内置免费端点；`false` 关闭。 |
+
 ### 内置免费模型（免注册、免 Key）
 
-`vision_describe` 在所有配置的付费/自有模型都失败后，会自动落到**内置的免费视觉端点**——
-[OVHcloud AI Endpoints](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities)
-的匿名层（`Qwen2.5-VL-72B-Instruct`）：**无需账号、无需 Key、无需代理**；
-匿名额度为**每个 IP、每个模型每分钟 2 次**（免费层为尽力而为，正式高频使用请换成自己的配额）。
+默认视觉模型就是 [OVHcloud AI Endpoints](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities)
+匿名层（`Qwen2.5-VL-72B-Instruct`）：**无需账号、无需 Key、无需代理**；匿名额度为
+**每个 IP、每个模型每分钟 2 次**（免费层为尽力而为，正式高频使用请换成自己的配额）。
 
-想换掉默认免费端点或加更多直连供应商，用 `httpProviders`（OpenAI 兼容、`apiKeyEnv` 留空即匿名）：
+换默认免费端点或加直连供应商，用 `httpProviders`（OpenAI 兼容）：
 
 ```yaml
 config:
   httpProviders:
-    - name: ovh
-      baseURL: https://oai.endpoints.kepler.ai.cloud.ovh.net/v1
-      model: Qwen2.5-VL-72B-Instruct
-    - name: zhipu
-      baseURL: https://open.bigmodel.cn/api/paas/v4
-      model: glm-4.6v-flash
-      apiKeyEnv: ZAI_API_KEY
+    - name: my-endpoint
+      baseURL: https://your-endpoint.example.com/v1
+      model: qwen2.5-vl-72b
+      apiKeyEnv: MY_VISION_KEY   # 留空 = 匿名
 ```
 
-其他免费额度选择（均需注册领 Key；**免 Key 的视觉 API 目前只有上述 OVHcloud 匿名层**）：
-
-| 平台 | 免费视觉模型 | 直连 | 说明 |
-|---|---|---|---|
-| 🥇 阿里云百炼 DashScope | `qwen-vl-plus` 等 | ✅ | 新用户每系列 100 万 token/90 天，额度最大（推荐首选） |
-| 🥈 智谱 bigmodel.cn | `glm-4.6v-flash` | ✅ | **永久免费**通用 VLM，唯一长期零成本 |
-| 🥉 SiliconFlow 硅基流动 | `Qwen/Qwen2.5-VL-7B-Instruct` 等 | ✅ | ¥14 赠金覆盖 |
-| OpenRouter（海外） | `google/gemma-4-31b-it:free` 等 | 需代理 | 免费 50 次/天；**免费名单轮换频繁**（`qwen-vl-plus:free`、`llama-4-scout:free` 等已下架） |
-
-以上平台的即插即用配置见 [`presets/`](./presets/) 目录（每套一份 baseURL + 免费模型 id + `apiKeyEnv`，你只需填一个 Key）。完整调研与来源见 [`docs/free-models.zh-CN.md`](./docs/free-models.zh-CN.md)。
-
-### 多供应商链路
+### 多供应商链路（付费质量优先，免费兜底）
 
 ```yaml
 config:
   providers:
     - provider: openrouter
-      model: openai/gpt-5.6-sol
-      fallbacks: [openai/gpt-5.6-sol-pro]
-    - provider: openrouter
       model: qwen/qwen3-vl-235b-a22b-instruct
-    - provider: pi-ai-custom
-      model: glm-4.6v
+      fallbacks: [openai/gpt-5.6-sol, z-ai/glm-5v-turbo]
+  # 全部失败后仍会落到内置免费端点（freeFallback 默认开启）
 ```
 
-每个"供应商/模型"对都是链路中独立的一环——一环失败即换下一环，跨供应商同样生效。
+> **前置条件**：harness 供应商里的每个视觉模型都必须声明 `input: [text, image]`，
+> 否则 harness 会拒绝给它传图片。
 
 ### 代理
+
+只把视觉供应商域名走本地代理，DeepSeek 保持直连：
 
 ```yaml
 config:
   proxy: http://127.0.0.1:10808
-  proxyHosts: [openrouter.ai]
+  proxyHosts:
+    - openrouter.ai
 ```
-
-当供应商对你的 IP 做地区限制、或你的出口节点被 ToS 风控时非常有用。
-只有列出的域名走代理；DeepSeek 保持直连。
-
-## 方案对比
-
-**一句话讲清区别**：其他 dsh 视觉插件大多"把图片转成文字描述再喂给 DeepSeek"（描述桥，有信息损耗）；
-本插件主打"**图片轮直接交给视觉模型看原图**"（路由桥，像素保真），同时内置免 Key 免费模型兜底。
-
-| | 手动切换模型 | MCP 视觉桥 | 本插件 |
-|---|---|---|---|
-| 像素保真 | ✅ 完整（切换后） | ❌ 只有文字描述 | ✅ 完整，图片轮内 |
-| 自动化 | ❌ | ✅ | ✅ |
-| 日常模型不受影响 | ❌（整会话被换） | ✅ | ✅ |
-| 供应商失败恢复 | ❌ | ❌ | ✅ 降级链 |
-| 可复用的结构化查询 | — | 部分 | ✅ JSON 模式 + 缓存 |
-| 免费开箱即用 | ❌ | ❌ | ✅ 内置免 Key 免费端点 |
-| 贴合 dsh 组合体系 | — | 外部服务器 | ✅ 一行插件行 |
-
-**与现有 dsh 社区方案的差异**（均为优秀项目，各有侧重）：
-
-| 项目 | 思路 | 本插件的差异 |
-|---|---|---|
-| [dsh-vision-sidecar](https://github.com/121103qwq/dsh-vision-sidecar) | 图片先经外部 VLM 做 OCR/描述，描述作为会话消息交给 DeepSeek；默认 OVHcloud 匿名端点 | 描述桥方案；本插件提供"原图直看"路由，描述能力由 `vision_describe` 按需替代 |
-| [dsh-vision-proxy](https://github.com/Flyvhidbwo/dsh-vision-proxy) | 包装 provider 路由，请求流里把图片转译成文本再交给 DeepSeek | 转译桥方案；本插件不包装 provider，通过 `agent/request` 瀑布改写路由 |
-| [dsh-vision-provider](https://github.com/libinyam/dsh-vision-provider) | 纯配置 bundle，注册一个 OpenAI 兼容多模态路由 | 配置层思路相同；本插件在此基础上增加自动路由、降级链与工具 |
-| [modlens](https://github.com/liustack/modlens) | 最早的 dsh 视觉插件；复用本机 Codex/OpenCode/Pi 等登录态作为视觉引擎 | 引擎复用思路；本插件自带供应商链，不依赖本机其他 CLI |
-| [dsh-vision-toolkit](https://github.com/Anionex/dsh-vision-toolkit) | 10 个意图化视觉工具（Q&A/OCR/像素校验/UI 还原） | 工具集更全；本插件聚焦"路由 + 一个通用对比工具"，更轻 |
-| [dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision) | `inspect_image` 工具 + `llm/stream` 瀑布图片桥 | 瀑布桥思路相近；本插件多出轮次路由、降级链、缓存与免费端点 |
-
-## 致谢
-
-本插件借鉴了以上全部社区项目的思路，特别是 [dsh-vision-sidecar](https://github.com/121103qwq/dsh-vision-sidecar)
-的"免注册免费端点"发现（OVHcloud AI Endpoints 匿名层）。感谢
-[dsh-vision-proxy](https://github.com/Flyvhidbwo/dsh-vision-proxy)、
-[dsh-vision-provider](https://github.com/libinyam/dsh-vision-provider)、
-[modlens](https://github.com/liustack/modlens)、
-[dsh-vision-toolkit](https://github.com/Anionex/dsh-vision-toolkit)、
-[dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision) 作者们的探索。
 
 ## 常见问题
 
-**模型选择器里的「DeepSeek + 自动识图」是什么？**
-这是插件注册的包装路由（`deepseek-vision`）：它声明图片输入以通过宿主准入，实际请求
-仍由插件瀑布改写——图片轮走视觉模型、文字轮回 DeepSeek。选它当会话入口模型即可，
-右下角显示的是你的主力模型（DeepSeek-V4-Pro）。
+**Q：为什么发图提示"当前模型不支持图片"？**
+会话模型选了普通 DeepSeek（官方适配器硬编码仅文本，准入检查先于插件）。把会话模型切到「DeepSeek + 自动识图」（或把默认模型设为它），或开启隐身模式（禁用官方 `llm-deepseek` 行）。
 
-**为什么要把会话模型切成视觉模型，而不是留在 DeepSeek？**
-harness 的发送准入（`prompt` RPC，先于任何插件运行）会拒绝"当前会话模型不含 image 输入声明"的图片消息；
-DeepSeek 适配器把 `inputModalities` 硬编码为 `["text"]` 且无法通过设置覆盖。因此入口模型必须是声明了
-图片输入的视觉模型；插件用 `reverseRouting` 把纯文字轮自动改回 `textProvider`（DeepSeek），
-图片轮留在入口视觉模型上。这正是 dsh-vision-proxy / modlens 也包装 provider 路由的原因。
+**Q：免费模型能日常用吗？**
+匿名端点限流 2 次/分钟/IP，且为尽力而为。适合尝鲜与兜底；高频请配 `providers` 付费模型（免费端点自动成为最后兜底）。
 
-**为什么是轮次级而不是会话级粘性路由？**
-你要的是"除了图片都走日常模型"。图片轮获得完整像素保真；视觉模型的文字结论
-留在历史里，文本模型之后仍能读到。
+**Q：OCR / 矢量化 / 抠图 / 截图需要装什么？**
+- `vision_ocr`：本机 tesseract（`brew install tesseract`，含 chi_sim）优先；没有则自动用视觉模型兜底。
+- `vision_trace`：纯 JS potrace，随插件安装，无额外依赖。
+- `vision_extract_foreground`：纯 JS，无额外依赖（适合纯色背景）。
+- `vision_html_screenshot`：需要本机 Chrome/Chromium/Edge（puppeteer-core 不捆绑浏览器，随插件安装）。
 
-**为什么 403 "not available in your region"？**
-供应商按地区限制。把供应商域名走一个出口 IP 可用的代理，或用地区可用的备用模型。
+**Q：图片轮会不会把整段历史发给视觉模型？**
+不会。视觉模型只收「图片 + 你的问题」（约 1.5k token/图）；历史裁剪也按目标模型窗口自动进行。
 
-**为什么走了代理还是 "provider Terms Of Service"？**
-你的出口节点 IP 被供应商风控（数据中心 IP 很常见）。换个干净的节点，或用备用模型。
-
-**为什么 `api.openrouter.ai` 连不上而 `openrouter.ai` 正常？**
-部分地区和出口节点专门重置 `api.` 子域名。把 OpenRouter 的 `baseURL` 指向
-`https://openrouter.ai/api/v1` 即可。
-
-**支持哪些图片格式？**
-harness 附件路径只接受 `png`/`jpeg`/`webp`/`gif`。`heic`/`tiff` 需先转码。
-上传图片还受部署的 `attachment-local` 限制（默认 5 MB / 4000 万像素，
-覆盖该行可调大）。
+**Q：模型说"没收到过图片"？**
+视觉轮成功后会缓存识图结果，文字轮把图片块替换成描述文字注入 DeepSeek；视觉轮失败过的图片会注入诚实占位符（"视觉内容未随本次文本请求发送"）。
 
 ## 开发
 
 ```sh
-pnpm install
+pnpm install   # 国内镜像不可用时：pnpm install --registry=https://registry.npmjs.org/
 pnpm test
 ```
 
-导出的纯函数（`providersOf`、`blocksHaveImage`、`eventHasImage`、
-`rewriteImageBlocks`、`extractJson`、`createCache`、`downscaleImage`、
-`createChunkAssembler`、`classifyFailure`）是可测试的核心；`apply` 负责把
-它们接入 harness 瀑布。欢迎 PR。
-
 ## 许可证
 
-[LGPL-3.0](./LICENSE)
+LGPL-3.0
