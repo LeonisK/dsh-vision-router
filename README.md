@@ -178,6 +178,10 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 
 ## 配置项
 
+除组合配置外，也可在 Web 的「设置 → 插件 → 插件配置」里用图形化面板调整常用项
+（路由开关、视觉模型链、文本模型、隐身模式等）。注意：`stealth` 在面板里的改动
+需重启 dsh 生效（是否接管官方路由在插件启动时决定）。
+
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `provider` | `openrouter` | 简写链路的供应商路由。 |
