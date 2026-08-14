@@ -4,21 +4,25 @@
 
 <h1 align="center">dsh-vision-router</h1>
 
-<p align="center"><strong>给 DeepSeek Harness 的纯文本 Agent 装上“眼睛”——开箱免费、无 Python、一条命令安装。</strong></p>
+<p align="center"><strong>图片粘贴即用：给 DeepSeek Harness 的纯文本 Agent 装上“眼睛”——开箱免费、免 Key、无 Python、一条命令安装。</strong></p>
 
-<p align="center">发图即用：DeepSeek 始终负责思考，内置视觉链和像素级工具负责“看”。</p>
+<p align="center">DeepSeek 只负责思考，内置免费视觉链 + 10 个像素级工具负责“看”；图片轮次就像普通工具调用一样自然、可定位、可验证。</p>
 
 <p align="center">
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="awesome · DSH plugin" /></a>
-  <a href="https://github.com/ysr666/dsh-vision-router/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-5B4CF0?style=flat-square" alt="Release v0.2.0" /></a>
-  <a href="tests"><img src="https://img.shields.io/badge/verified-76%20tests-2EA44F?style=flat-square" alt="Verified: 61 tests" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-LGPL--3.0-0B7285?style=flat-square" alt="License: LGPL-3.0" /></a>
+  <a href="https://github.com/ysr666/dsh-vision-router/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-5B4CF0?style=flat-square" alt="Release v1.0.0" /></a>
+  <a href="tests"><img src="https://img.shields.io/badge/verified-86%20tests-2EA44F?style=flat-square" alt="Verified: 86 tests" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat-square" alt="License: MIT" /></a>
   <a href="package.json"><img src="https://img.shields.io/badge/Node.js-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >=22" /></a>
   <img src="https://img.shields.io/badge/runtime-no%20Python-8A2BE2?style=flat-square" alt="No Python" />
   <a href="cordis.patch.yml"><img src="https://img.shields.io/badge/DSH-Web%20profile-5B4CF0?style=flat-square" alt="DSH Web profile" /></a>
 </p>
 
 <p align="center"><a href="README.md">English</a> · 中文</p>
+
+<p align="center">
+  <img src="assets/vision-demo.gif" width="640" alt="演示：粘贴图片，Agent 用 vision_ground / vision_crop / vision_pixel_diff 定位发送按钮并给出坐标" />
+</p>
 
 ## 为什么做这个
 
@@ -30,6 +34,23 @@
 - **可连续多步看图。** 图片轮 = 调用工具的文本轮：`vision_ground` → `vision_crop` → `vision_describe` → `vision_pixel_diff` → 修复 → 再截图，Agent 可以一直迭代到任务完成。
 - **DeepSeek 始终是大脑。** 文字轮在模型、成本、上下文上完全不动；视觉模型只当“眼睛”、按需调用，答案按图片内容缓存。
 - **界面无感。** 上传的图片在会话界面里照常显示为图片；指向视觉工具的改写只发生在模型输入层，从不写入会话日志。
+
+## 对比同类插件
+
+最接近的同类是 [@anionex/dsh-vision-toolkit](https://github.com/Anionex/dsh-vision-toolkit)（Anionex），它是知名 `agent-vision-toolkit` 系列的 DSH 原生版。两者都提供 `vision-tools` 技能和一组像素级工具，区别在理念：**零配置粘贴即用** vs **Agent 主导的视觉工程**：
+
+| | dsh-vision-router | @anionex/dsh-vision-toolkit |
+|---|---|---|
+| 开箱图片问答 | ✅ 内置免费视觉链（OVHcloud 匿名端点），免注册免 Key | 远程工具需自备视觉 API Key（本地像素工具免 Key） |
+| 运行时 | ✅ 纯 Node，无需 Python | 需要 Python 3.11+ 受管运行时 |
+| 图片怎么进来 | ✅ 直接粘贴——轮次自动切视觉链并自动挂载工具 | 工作区路径 + `/vision-tools` 命令，再显式调用工具 |
+| 轮次路由 | ✅ 图片轮切视觉、文本轮切回 DeepSeek——隐身接管，模型选择器与官方一致 | 工具驱动，无整轮自动路由 |
+| 支持 profile | Web | Web + Headless |
+| 玩法库 | 像素循环：定位 → 裁剪 → 对比 → 修复 → 再截图 | 更丰富的案例库（长截图 OCR、UI 还原、GUI 自动化） |
+| 测试 | 86 | 162 |
+| 安装 | 一条命令 | 一条命令（npm） |
+
+两者都是 MIT 许可、一条命令安装。想要图片**粘贴即用**、零配置就选本插件；需要 Headless 部署或更丰富的案例库，可以看 @anionex/dsh-vision-toolkit。（功能对比以其 README 2026-08 状态为准。）
 
 ## 快速开始
 
@@ -234,7 +255,7 @@ dsh plugin --profile web remove dsh-vision-router
 
 ## License
 
-[LGPL-3.0](LICENSE)
+[MIT](LICENSE)
 
 <!-- star-history-chart -->
 ## Star 趋势
