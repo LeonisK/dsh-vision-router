@@ -1214,7 +1214,14 @@ export function apply(ctx, config = {}) {
   // for free without any credential. Configured `httpProviders` join the same
   // route; the model picker shows them like any other model.
   const HTTP_ROUTE = 'vision-http'
-  const httpEntries = httpProviders().map((provider) => ({
+  // Route entries come from the RAW provider list: the route must serve every
+  // model its pairs can name, including the default OVHcloud entry that the
+  // default chain pair covers. (The deduped `httpProviders()` list is only for
+  // the vision_describe tool fallback, so the free endpoint is never asked
+  // twice for the same image.)
+  const httpRouteProviders = () =>
+    httpProvidersOf(current(), current().freeFallback !== false)
+  const httpEntries = httpRouteProviders().map((provider) => ({
     id: `${provider.name}/${provider.model}`,
     name: `${provider.name}/${provider.model}`,
     provider,

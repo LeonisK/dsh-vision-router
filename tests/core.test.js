@@ -339,6 +339,20 @@ test('httpProvidersOf falls back to the built-in default unless disabled', () =>
   assert.deepEqual(httpProvidersOf({ httpProviders: custom }, false), custom)
 })
 
+test('dedupeHttpProviders drops only entries the vision-http chain covers', () => {
+  // The default chain pair names the default OVH entry: the tool fallback must
+  // drop it (never ask the free endpoint twice), while the RAW list feeding
+  // the vision-http route keeps it so the pair has an adapter at all.
+  const pairs = [{ provider: 'vision-http', model: 'ovh/Qwen2.5-VL-72B-Instruct' }]
+  const raw = httpProvidersOf({})
+  const deduped = dedupeHttpProviders(pairs, raw)
+  assert.ok(raw.length > 0)
+  assert.equal(raw.some((p) => `${p.name}/${p.model}` === 'ovh/Qwen2.5-VL-72B-Instruct'), true)
+  assert.equal(deduped.some((p) => `${p.name}/${p.model}` === 'ovh/Qwen2.5-VL-72B-Instruct'), false)
+  const unrelated = [{ name: 'ovh', baseURL: 'x', model: 'Other-VL' }]
+  assert.equal(dedupeHttpProviders(pairs, unrelated).length, 1)
+})
+
 test('reverseRouteTarget rewrites vision-entry text turns back to the text provider', () => {
   const opts = {
     pairs: [{ provider: 'openrouter', model: 'qwen-vl' }],
