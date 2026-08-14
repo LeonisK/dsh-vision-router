@@ -790,10 +790,13 @@ function mockHarnessCtx({ stockRoute = false, config0 = {} } = {}) {
 
 test('apply registers the stealth deepseek-official route with the stock catalog', async () => {
   const { ctx, adapters } = mockHarnessCtx()
-  // the harness loader normalizes the entry config through the Config schema
+  // the harness loader normalizes the entry config through the Config schema;
+  // routing: true keeps the legacy chain route mounted (the default is off —
+  // image turns go through the vision tools instead)
   apply(ctx, Config({
     provider: 'openrouter',
     providers: [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }],
+    routing: true,
   }))
 
   // all four routes came up: hidden native, public deepseek-official, the
@@ -813,6 +816,16 @@ test('apply registers the stealth deepseek-official route with the stock catalog
   // the hidden routes advertise no models
   assert.deepEqual(await adapters.get('deepseek-official-native').listModels('deepseek-official-native'), [])
   assert.deepEqual(await adapters.get('deepseek-vision').listModels('deepseek-vision'), [])
+})
+
+test('apply skips the chain route by default: image turns go through the vision tools', () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  apply(ctx, Config({}))
+  // tools-first philosophy: no whole-turn chain routing by default, but the
+  // vision-http backend for vision_describe stays mounted
+  assert.equal(adapters.has('vision-chain'), false)
+  assert.ok(adapters.has('vision-http'))
+  assert.ok(adapters.has('deepseek-official-native'))
 })
 
 test('apply falls back to the visible wrapper when the stock route is still active', async () => {

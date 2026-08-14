@@ -45,7 +45,9 @@ export const Config = z.object({
       }),
     )
     .default([]),
-  routing: z.boolean().default(true),
+  // 默认关闭：图片轮不整轮切到视觉模型，而是像普通文本轮一样由会话模型
+  // 调用视觉工具看图（可连续多步操作）。开启后恢复旧的整轮自动路由行为。
+  routing: z.boolean().default(false),
   reverseRouting: z.boolean().default(true),
   wrapperRoute: z.string().default('deepseek-vision'),
   chainRoute: z.string().default('vision-chain'),
@@ -1659,9 +1661,12 @@ export function apply(ctx, config = {}) {
             ],
             source: { kind: 'plugin', plugin: 'dsh-vision-router' },
           }
+          // 图片块统一改写：有缓存的视觉记录就给出记录，否则给附件标记，
+          // 模型像普通文本轮一样用 vision_describe 等工具看图，可连续多步。
+          // 仅当显式开启 legacy routing（图片轮整轮交给视觉模型）时保留原块。
           const base =
             rewriteEnabled() && !routingEnabled()
-              ? rewrite.messages
+              ? rewriteHistoryImages(messages, imageMemory).messages
               : decision.messages ?? payload.messages ?? []
           return { ...decision, messages: [...base, reminder] }
         }
@@ -1669,7 +1674,7 @@ export function apply(ctx, config = {}) {
       // With routing disabled, rewrite uploaded image blocks into attachment
       // markers so the text-only model can still query them via vision_describe.
       if (rewriteEnabled() && !routingEnabled()) {
-        return { ...decision, messages: rewrite.messages }
+        return { ...decision, messages: rewriteHistoryImages(messages, imageMemory).messages }
       }
     }
     // Text-only turn after images entered the conversation: replace image

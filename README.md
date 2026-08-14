@@ -201,17 +201,17 @@ agent-default-model:
 | `model` | `ovh/Qwen2.5-VL-72B-Instruct` | 主视觉模型（简写形式；**默认即内置免费端点**）。 |
 | `fallbacks` | `[]` | 同一供应商的备用模型（简写形式）。 |
 | `providers` | `[]` | **多供应商形式**：`{ provider, model, fallbacks[] }` 列表，逐条尝试；优先于简写形式。 |
-| `routing` | `true` | 轮次级路由。`false` = 仅工具。 |
-| `reverseRouting` | `true` | 文字轮反向路由回 `textProvider`。 |
+| `routing` | `false` | 图片轮整轮自动路由到视觉链（一次性整轮回答）。**默认关闭**：图片轮像普通文本轮一样由会话模型调用视觉工具看图，可连续多步操作；`true` = 恢复旧行为。 |
+| `reverseRouting` | `true` | 开启 `routing` 时，文字轮反向路由回 `textProvider`。 |
 | `wrapperRoute` | `deepseek-vision` | 包装路由名（选择器显示"DeepSeek + 自动识图"）；置空关闭。 |
-| `chainRoute` | `vision-chain` | 视觉降级链路由名。 |
+| `chainRoute` | `vision-chain` | 视觉降级链路由名（仅 `routing: true` 时挂载；识图工具直接走真实 provider）。 |
 | `stealth` | `true` | 尝试接管 `deepseek-official` 路由（"隐身模式"，需配合禁用官方 `llm-deepseek` 行）。 |
 | `textProvider` | `deepseek-official` / `deepseek-v4-pro` | 纯文字轮次使用的模型（你的日常模型）。 |
 | `tool` | `true` | 注册视觉工具；`false` = 仅路由。 |
 | `progressiveTools` | `true` | 渐进式暴露：深看工具不常驻，图片轮自动挂载。 |
 | `autoActivateOnImage` | `true` | 图片轮次自动挂载深看工具 + 一次性使用提示。 |
 | `artifactsDir` | `.dsh-vision-router/artifacts` | 产物目录（相对会话工作区）。 |
-| `rewriteImages` | `true` | 关闭路由时把上传图片块改写为附件标记。 |
+| `rewriteImages` | `true` | 把消息里的图片块改写为文字（视觉记录或附件标记），文本模型不会收到图片内容。 |
 | `downscale` / `downscaleMaxPixels` | `true` / `8000000` | 大图自动缩放与像素预算。 |
 | `cache` / `cacheTtlSeconds` / `cacheMaxEntries` | `true` / `3600` / `200` | 视觉答案缓存。 |
 | `timeoutMs` | `120000` | 单次视觉调用超时。 |
