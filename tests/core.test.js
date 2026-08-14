@@ -28,6 +28,11 @@ import {
   estimateTokens,
   estimateMessages,
   trimMessagesToBudget,
+  parseBox,
+  computePixelDiff,
+  renderDiffHeatmap,
+  quantizeColors,
+  boxToSvg,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -478,4 +483,64 @@ test('lastUserText returns the current user question', () => {
   ]
   assert.equal(lastUserText(messages), '新问题')
   assert.equal(lastUserText([{ role: 'assistant', content: [] }]), '')
+})
+
+test('parseBox validates string and object forms', () => {
+  assert.deepEqual(parseBox('10,20,110,120'), { x1: 10, y1: 20, x2: 110, y2: 120 })
+  assert.deepEqual(parseBox({ x1: 1, y1: 2, x2: 3, y2: 4 }), { x1: 1, y1: 2, x2: 3, y2: 4 })
+  assert.equal(parseBox('10,20,110'), undefined)
+  assert.equal(parseBox('10,20,10,30'), undefined) // x2 <= x1
+  assert.equal(parseBox('-1,0,10,10'), undefined)
+  assert.equal(parseBox(undefined), undefined)
+})
+
+test('computePixelDiff counts differing pixels and worst grid cells', () => {
+  // 4x4 image, left half identical, right half fully different
+  const a = Buffer.alloc(4 * 4 * 4, 10)
+  const b = Buffer.alloc(4 * 4 * 4, 10)
+  for (let y = 0; y < 4; y++) {
+    for (let x = 2; x < 4; x++) {
+      b[(y * 4 + x) * 4] = 200
+    }
+  }
+  const diff = computePixelDiff(a, b, 16, 4, 4)
+  assert.equal(diff.total, 16)
+  assert.equal(diff.differing, 8)
+  assert.equal(diff.ratio, 0.5)
+  assert.ok(diff.cells.length > 0)
+  assert.ok(diff.mask[0] === 0 && diff.mask[2] === 1)
+})
+
+test('renderDiffHeatmap marks differing pixels red on a grayscale base', () => {
+  const raw = Buffer.alloc(2 * 2 * 4, 255)
+  const mask = new Uint8Array([0, 1, 0, 0])
+  const out = renderDiffHeatmap(raw, mask, 2, 2)
+  assert.deepEqual([out[0], out[1], out[2], out[3]], [255, 255, 255, 255]) // gray
+  assert.deepEqual([out[4], out[5], out[6], out[7]], [255, 0, 0, 255]) // red
+})
+
+test('quantizeColors returns dominant hex colors with shares', () => {
+  const raw = Buffer.alloc(100 * 4)
+  for (let i = 0; i < 80; i++) {
+    raw[i * 4] = 10
+    raw[i * 4 + 1] = 20
+    raw[i * 4 + 2] = 30
+    raw[i * 4 + 3] = 255
+  }
+  for (let i = 80; i < 100; i++) {
+    raw[i * 4] = 200
+    raw[i * 4 + 1] = 210
+    raw[i * 4 + 2] = 220
+    raw[i * 4 + 3] = 255
+  }
+  const colors = quantizeColors(raw, 2)
+  assert.equal(colors.length, 2)
+  assert.equal(colors[0].count, 80)
+  assert.ok(colors[0].hex.startsWith('#'))
+})
+
+test('boxToSvg draws a rect with pixel coordinates', () => {
+  const svg = boxToSvg({ x1: 5, y1: 6, x2: 15, y2: 26 }, 100, 100).toString()
+  assert.ok(svg.includes('x="5" y="6"'))
+  assert.ok(svg.includes('width="10" height="20"'))
 })
