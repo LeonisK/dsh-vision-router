@@ -1,27 +1,34 @@
-# dsh-vision-router
+<p align="center">
+  <img src="assets/hero-zh.svg" width="100%" alt="DSH Vision Router——为 DeepSeek Harness 的纯文本 Agent 提供视觉能力" />
+</p>
 
-**给 DeepSeek Harness 的纯文本 Agent 装上"眼睛"——开箱免费、无 Python、一条命令安装。**
+<h1 align="center">dsh-vision-router</h1>
 
-发图即用：Agent 通过内置的**免费视觉链**（免注册、免 Key）和一组像素级工具看图，而每一轮的思考仍由 DeepSeek 完成。图片轮与普通调用工具的文本轮别无二致——Agent 可以连续地看、裁剪、对比、OCR、迭代，而不是只拿到一段有损的文字描述。
+<p align="center"><strong>给 DeepSeek Harness 的纯文本 Agent 装上“眼睛”——开箱免费、无 Python、一条命令安装。</strong></p>
 
-[![Release v0.2.0](https://img.shields.io/badge/release-v0.2.0-5B4CF0?style=flat-square)](https://github.com/ysr666/dsh-vision-router/releases/tag/v0.2.0)
-[![Verified: 61 tests](https://img.shields.io/badge/verified-61%20tests-2EA44F?style=flat-square)](tests)
-[![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-0B7285?style=flat-square)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json)
-[![No Python](https://img.shields.io/badge/runtime-no%20Python-8A2BE2?style=flat-square)]()
-[![DSH profiles](https://img.shields.io/badge/DSH-Web%20profile-5B4CF0?style=flat-square)](cordis.patch.yml)
+<p align="center">发图即用：DeepSeek 始终负责思考，内置视觉链和像素级工具负责“看”。</p>
 
-[English](README.md) | 中文
+<p align="center">
+  <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="awesome · DSH plugin" /></a>
+  <a href="https://github.com/ysr666/dsh-vision-router/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-5B4CF0?style=flat-square" alt="Release v0.2.0" /></a>
+  <a href="tests"><img src="https://img.shields.io/badge/verified-61%20tests-2EA44F?style=flat-square" alt="Verified: 61 tests" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-LGPL--3.0-0B7285?style=flat-square" alt="License: LGPL-3.0" /></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >=22" /></a>
+  <img src="https://img.shields.io/badge/runtime-no%20Python-8A2BE2?style=flat-square" alt="No Python" />
+  <a href="cordis.patch.yml"><img src="https://img.shields.io/badge/DSH-Web%20profile-5B4CF0?style=flat-square" alt="DSH Web profile" /></a>
+</p>
+
+<p align="center"><a href="README.md">English</a> · 中文</p>
 
 ## 为什么做这个
 
-大多数 DSH 视觉插件把图片"翻译"成一段文字描述再喂给 DeepSeek——有损、一次性、看不见像素。本插件把**原图像素留在视觉模型侧**、把推理留在 DeepSeek 侧，并把"看图"变成一次**普通的工具调用**：
+大多数 DSH 视觉插件把图片“翻译”成一段文字描述再喂给 DeepSeek——有损、一次性、看不见像素。本插件把**原图像素留在视觉模型侧**、把推理留在 DeepSeek 侧，并把“看图”变成一次**普通的工具调用**：
 
 - **一条命令安装。** 包自带组合补丁（`dsh.bundle.patch`）：`dsh plugin add` 自动完成插件行挂载、准入包装、隐身接管与附件限制放宽——不用手改任何文件。
 - **默认免费。** 视觉链内置 OVHcloud 匿名端点（`Qwen2.5-VL-72B-Instruct`，免注册、免 Key，每 IP 2 次/分钟）。付费链路（OpenRouter、Pi-AI 供应商、任意 OpenAI 兼容直连端点）是可选升级。
 - **无 Python。** 整条管线——缩放、定位、裁剪、像素对比、取色、OCR、SVG 矢量化、抠图、HTML 截图——全部基于 sharp / potrace / tesseract / 系统 Chrome。
 - **可连续多步看图。** 图片轮 = 调用工具的文本轮：`vision_ground` → `vision_crop` → `vision_describe` → `vision_pixel_diff` → 修复 → 再截图，Agent 可以一直迭代到任务完成。
-- **DeepSeek 始终是大脑。** 文字轮在模型、成本、上下文上完全不动；视觉模型只当"眼睛"、按需调用，答案按图片内容缓存。
+- **DeepSeek 始终是大脑。** 文字轮在模型、成本、上下文上完全不动；视觉模型只当“眼睛”、按需调用，答案按图片内容缓存。
 - **界面无感。** 上传的图片在会话界面里照常显示为图片；指向视觉工具的改写只发生在模型输入层，从不写入会话日志。
 
 ## 快速开始
@@ -51,29 +58,26 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 
 - **原图像素，真实答案。** 视觉链按原始分辨率读图（仅为保护延迟/额度自动缩放）；你的问题随图一起发送，答案围绕*你的问题*，而不是一段泛泛的描述。
 - **自动降级 + 分类报错。** 地区限制、ToS 风控、402 额度、429 限流（尊重 Retry-After 退避重试）、上下文超长、网络故障——链路逐供应商尝试，全部失败才报错并给出可操作的建议。
-- **图片记忆。** 视觉答案按附件内容哈希缓存；后续文字轮用记录的描述替换历史图片（标注为不可信证据），DeepSeek 真正"记得"之前发过的图，且不重复消耗视觉调用。
-- **可验证的像素闭环。** 参照图 → `vision_html_screenshot` → `vision_pixel_diff`（差异率 + 红色热力图 + 最差区域排行）→ 修复 → 再对比，直到差异归零。UI 还原从"目测"变成"实测"。
+- **图片记忆。** 视觉答案按附件内容哈希缓存；后续文字轮用记录的描述替换历史图片（标注为不可信证据），DeepSeek 真正“记得”之前发过的图，且不重复消耗视觉调用。
+- **可验证的像素闭环。** 参照图 → `vision_html_screenshot` → `vision_pixel_diff`（差异率 + 红色热力图 + 最差区域排行）→ 修复 → 再对比，直到差异归零。UI 还原从“目测”变成“实测”。
 - **渐进式 schema 暴露。** 平时只有一个零参引导工具 `vision_activate`；图片轮自动挂载全部 9 个深看工具（附一次性使用提示），并为纯文字轮注册 `vision-tools` 技能。
 - **选择性代理。** 只有配置的视觉供应商域名走本地代理；DeepSeek 保持直连。
 
 ## 工作原理
 
-```mermaid
-flowchart TD
-    U[用户发图] --> PS{agent/pre-step<br/>自动挂载深看工具}
-    PS --> WRAP[wrapper / stealth 路由<br/>deepseek-official 声明图片输入]
-    WRAP --> MARK[模型输入层改写图片块<br/>缓存描述或简洁工具提示标记<br/>——界面仍显示原图]
-    MARK --> DS[DeepSeek 完整 agent 轮<br/>思考 / 工具 / 回答]
-    DS --> TOOL[Agent 调用 vision_describe 等工具<br/>视觉链逐供应商尝试<br/>免费端点、兜底、429 退避]
-    TOOL --> ART[产物写入工作区<br/>.dsh-vision-router/artifacts]
-    TOOL --> DS
-```
+<p align="center">
+  <img src="assets/how-it-works-zh.svg" width="100%" alt="DSH Vision Router 的工作原理：DeepSeek 作为大脑，视觉工具作为眼睛。" />
+</p>
 
-视觉模型**只当眼睛**，DeepSeek **始终是大脑**。图片轮永远不会被一次性视觉答案"劫持"——Agent 自己驱动工具，可以跨多个步骤持续对同一张图操作。
+视觉模型**只当眼睛**，DeepSeek **始终是大脑**。图片轮永远不会被一次性视觉答案“劫持”——Agent 自己驱动工具，可以跨多个步骤持续对同一张图操作。
 
 ## 工具
 
 9 个深看工具在图片轮自动挂载（`autoActivateOnImage`）；文字轮可通过 `vision_activate` 或 `/vision-tools` 技能挂载。全部基于 sharp / potrace / tesseract / 系统 Chrome——无 Python：
+
+<p align="center">
+  <img src="assets/vision-tools-zh.svg" width="100%" alt="DSH Vision Router 的 9 个视觉工具。" />
+</p>
 
 | 工具 | 作用 | 产物 |
 |---|---|---|
