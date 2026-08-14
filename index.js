@@ -32,6 +32,19 @@ import potrace from 'potrace'
 export const name = 'vision-router'
 export const inject = ['tools', 'llm']
 
+/** Default proxy host list: common foreign AI API domains; inert unless `proxy` is set. */
+export const DEFAULT_PROXY_HOSTS = [
+  'api.openrouter.ai',
+  'openrouter.ai',
+  'api.openai.com',
+  'api.anthropic.com',
+  'api.groq.com',
+  'api.mistral.ai',
+  'api.together.xyz',
+  'generativelanguage.googleapis.com',
+  'api.x.ai',
+]
+
 export const Config = z.object({
   provider: z.string().default('vision-http'),
   model: z.string().default('ovh/Qwen2.5-VL-72B-Instruct'),
@@ -70,7 +83,7 @@ export const Config = z.object({
   cacheMaxEntries: z.number().step(1).min(1).default(200),
   timeoutMs: z.number().step(1).min(1000).max(600000).default(120000),
   proxy: z.string().default(''),
-  proxyHosts: z.array(z.string()).default(['api.openrouter.ai', 'openrouter.ai']),
+  proxyHosts: z.array(z.string()).default([...DEFAULT_PROXY_HOSTS]),
   freeFallback: z.boolean().default(true),
   httpProviders: z
     .array(
@@ -728,6 +741,11 @@ export function reverseRouteTarget(config, { pairs, wrapperRoute, wrapperRegiste
 export function switchRoute(config, provider, model) {
   const { reasoningEffort: _reasoningEffort, ...rest } = config ?? {}
   return { ...rest, provider, model }
+}
+
+/** Host filter: `hostname` matches a list entry exactly or as a subdomain. */
+export function hostMatchesAny(hostname, hosts) {
+  return (hosts ?? []).some((host) => hostname === host || hostname.endsWith(`.${host}`))
 }
 
 /** Downscale bytes whose intrinsic pixel count exceeds maxPixels; returns original bytes on failure. */
@@ -1596,19 +1614,35 @@ export function apply(ctx, config = {}) {
   const sessionAttachmentsById = new Map()
 
   // ── optional fetch proxy for the vision provider hosts ─────────────────────
+  //
+  // Resolved per request from the live settings section (`current()`), so the
+  // Web settings panel can change the proxy URL and host list without a
+  // restart. The fetch patcher itself is installed once for the plugin fiber.
 
-  const proxyUrl =
-    typeof config.proxy === 'string' && config.proxy !== '' ? config.proxy : undefined
-  const proxyHosts = Array.isArray(config.proxyHosts)
-    ? config.proxyHosts.filter((host) => typeof host === 'string' && host !== '')
-    : ['api.openrouter.ai', 'openrouter.ai']
+  const currentProxyUrl = () => {
+    const value = current().proxy
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
+  const currentProxyHosts = () => {
+    const value = current().proxyHosts
+    return Array.isArray(value)
+      ? value.filter((host) => typeof host === 'string' && host !== '')
+      : []
+  }
 
-  if (proxyUrl !== undefined && proxyHosts.length > 0) {
-    const proxyAgent = new ProxyAgent(proxyUrl)
+  {
     const originalFetch = globalThis.fetch
-    const shouldProxy = (hostname) =>
-      proxyHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))
+    let cachedAgentUrl
+    let cachedAgent
+    const agentFor = (url) => {
+      if (cachedAgentUrl === url && cachedAgent !== undefined) return cachedAgent
+      cachedAgentUrl = url
+      cachedAgent = new ProxyAgent(url)
+      return cachedAgent
+    }
     const patchedFetch = (input, init) => {
+      const proxyUrl = currentProxyUrl()
+      if (proxyUrl === undefined) return originalFetch(input, init)
       let url
       try {
         url = new URL(
@@ -1617,8 +1651,8 @@ export function apply(ctx, config = {}) {
       } catch {
         return originalFetch(input, init)
       }
-      if (!shouldProxy(url.hostname)) return originalFetch(input, init)
-      return originalFetch(input, { ...(init ?? {}), dispatcher: proxyAgent })
+      if (!hostMatchesAny(url.hostname, currentProxyHosts())) return originalFetch(input, init)
+      return originalFetch(input, { ...(init ?? {}), dispatcher: agentFor(proxyUrl) })
     }
     ctx.effect(() => {
       globalThis.fetch = patchedFetch
