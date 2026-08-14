@@ -4,6 +4,7 @@
 
 发图即用：Agent 通过内置的**免费视觉链**（免注册、免 Key）和一组像素级工具看图，而每一轮的思考仍由 DeepSeek 完成。图片轮与普通调用工具的文本轮别无二致——Agent 可以连续地看、裁剪、对比、OCR、迭代，而不是只拿到一段有损的文字描述。
 
+[![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 [![Release v0.2.0](https://img.shields.io/badge/release-v0.2.0-5B4CF0?style=flat-square)](https://github.com/ysr666/dsh-vision-router/releases/tag/v0.2.0)
 [![Verified: 61 tests](https://img.shields.io/badge/verified-61%20tests-2EA44F?style=flat-square)](tests)
 [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-0B7285?style=flat-square)](LICENSE)
