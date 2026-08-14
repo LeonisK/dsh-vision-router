@@ -801,22 +801,57 @@ export async function callOpenAICompatible(provider, messages, options = {}) {
     max_tokens: options.maxTokens ?? provider.maxTokens ?? 4096,
     stream: false,
   }
-  const response = await fetch(`${provider.baseURL.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  })
-  if (!response.ok) {
-    const detail = (await response.text().catch(() => '')).slice(0, 300)
-    throw new Error(`http provider "${provider.name}": ${response.status} ${detail}`)
+  const url = `${provider.baseURL.replace(/\/$/, '')}/chat/completions`
+  const request = () =>
+    fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+  let retried = false
+  for (;;) {
+    const response = await request()
+    // Free endpoints are heavily rate limited (e.g. OVHcloud anonymous:
+    // 2 req/min/IP). Honor Retry-After once (capped), then surface the 429.
+    if (response.status === 429 && !retried) {
+      retried = true
+      const retryAfter = Number(response.headers.get('retry-after'))
+      const waitMs =
+        Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 60000) : 30000
+      await delay(waitMs, options.signal)
+      continue
+    }
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => '')).slice(0, 300)
+      throw new Error(`http provider "${provider.name}": ${response.status} ${detail}`)
+    }
+    const data = await response.json()
+    const content = data && data.choices && data.choices[0] && data.choices[0].message
+      ? data.choices[0].message.content
+      : undefined
+    if (typeof content !== 'string') throw new Error(`http provider "${provider.name}": unexpected response shape`)
+    return content.trim()
   }
-  const data = await response.json()
-  const content = data && data.choices && data.choices[0] && data.choices[0].message
-    ? data.choices[0].message.content
-    : undefined
-  if (typeof content !== 'string') throw new Error(`http provider "${provider.name}": unexpected response shape`)
-  return content.trim()
+}
+
+/** Abortable sleep for the rate-limit backoff above. */
+function delay(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal !== undefined && signal.aborted) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(() => {
+      if (signal !== undefined) signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    if (signal !== undefined) signal.addEventListener('abort', onAbort)
+  })
 }
 
 /**

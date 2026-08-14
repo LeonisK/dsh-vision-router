@@ -305,6 +305,34 @@ test('callOpenAICompatible surfaces non-ok responses as errors', async () => {
   }
 })
 
+test('callOpenAICompatible retries once after a 429 rate limit', async () => {
+  const original = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls += 1
+    if (calls === 1) {
+      return new Response('{"message":"API rate limit exceeded"}', {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '0' },
+      })
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'OK' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const text = await callOpenAICompatible(
+      { name: 't', baseURL: 'https://example.com/v1', model: 'm' },
+      [{ role: 'user', content: [] }],
+    )
+    assert.equal(text, 'OK')
+    assert.equal(calls, 2)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test('adapterAvailable reports registered adapters only', () => {
   const llm = {
     registration(provider) {
