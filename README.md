@@ -160,6 +160,13 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 
 重启 `dsh web`。
 
+> **⚠️ 重要（宿主准入，先于插件）**：harness 在发送消息时会检查**当前会话模型**声明的
+> `inputModalities`——DeepSeek 模型硬编码声明为仅文本，因此**会话模型选 DeepSeek 时拖图发送会被直接拒绝**
+> （提示"当前模型不支持图片"）。本插件无法改写这道检查，解决办法是把**会话的入口模型切到声明了
+> `input: [text, image]` 的视觉模型**（例如 OpenRouter 的 `qwen/qwen3-vl-235b-a22b-instruct`）：
+> 图片消息能通过准入，插件随后接管——图片轮留在该视觉模型上看原图，纯文字轮自动反向路由回
+> `textProvider`（默认 DeepSeek），日常体验与成本不变。
+
 > **前置条件**：你命名的每个视觉模型都必须存在于 OpenRouter 设置
 > （`$DSH_HOME/settings.yaml` → `llm-pi-ai.providers.openrouter.models`）中，
 > 并声明 `input: [text, image]`，否则 harness 会拒绝给它传图片。
@@ -173,6 +180,8 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 | `fallbacks` | `[]` | 同一供应商的备用模型（简写形式）。 |
 | `providers` | `[]` | **多供应商形式**：`{ provider, model, fallbacks[] }` 列表，逐条尝试；优先于简写形式。 |
 | `routing` | `true` | 轮次级路由。`false` = 仅工具。 |
+| `reverseRouting` | `true` | 文字轮反向路由回 `textProvider`（配合视觉入口模型使用，见下）。 |
+| `textProvider` | `deepseek-official` / `deepseek-v4-pro` | 纯文字轮次使用的模型（你的日常模型）。 |
 | `tool` | `true` | 注册 `vision_describe`。`false` = 仅路由。 |
 | `rewriteImages` | `true` | 关闭路由时，把上传图片块改写为附件标记。 |
 | `downscale` | `true` | 超过 `downscaleMaxPixels` 的图片自动缩放。 |
@@ -282,6 +291,12 @@ config:
 [dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision) 作者们的探索。
 
 ## 常见问题
+
+**为什么要把会话模型切成视觉模型，而不是留在 DeepSeek？**
+harness 的发送准入（`prompt` RPC，先于任何插件运行）会拒绝"当前会话模型不含 image 输入声明"的图片消息；
+DeepSeek 适配器把 `inputModalities` 硬编码为 `["text"]` 且无法通过设置覆盖。因此入口模型必须是声明了
+图片输入的视觉模型；插件用 `reverseRouting` 把纯文字轮自动改回 `textProvider`（DeepSeek），
+图片轮留在入口视觉模型上。这正是 dsh-vision-proxy / modlens 也包装 provider 路由的原因。
 
 **为什么是轮次级而不是会话级粘性路由？**
 你要的是"除了图片都走日常模型"。图片轮获得完整像素保真；视觉模型的文字结论

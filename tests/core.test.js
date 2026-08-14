@@ -19,6 +19,7 @@ import {
   adapterAvailable,
   httpProvidersOf,
   DEFAULT_HTTP_PROVIDERS,
+  reverseRouteTarget,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -313,4 +314,31 @@ test('httpProvidersOf falls back to the built-in default unless disabled', () =>
   const custom = [{ name: 'x', baseURL: 'https://x/v1', model: 'm' }]
   assert.deepEqual(httpProvidersOf({ httpProviders: custom }), custom)
   assert.deepEqual(httpProvidersOf({ httpProviders: custom }, false), custom)
+})
+
+test('reverseRouteTarget rewrites vision-entry text turns back to the text provider', () => {
+  const opts = {
+    pairs: [{ provider: 'openrouter', model: 'qwen-vl' }],
+    textProvider: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+    hasAdapter: (provider) => provider === 'deepseek-official',
+  }
+  assert.deepEqual(
+    reverseRouteTarget({ provider: 'openrouter', model: 'qwen-vl' }, opts),
+    { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+  )
+  // already on the text provider — untouched
+  assert.equal(
+    reverseRouteTarget({ provider: 'deepseek-official', model: 'deepseek-v4-pro' }, opts),
+    undefined,
+  )
+  // a non-vision provider must never be hijacked
+  assert.equal(reverseRouteTarget({ provider: 'some-other', model: 'x' }, opts), undefined)
+  // text provider without an adapter — fall through untouched
+  assert.equal(
+    reverseRouteTarget({ provider: 'openrouter', model: 'qwen-vl' }, {
+      ...opts,
+      hasAdapter: () => false,
+    }),
+    undefined,
+  )
 })

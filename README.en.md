@@ -159,6 +159,14 @@ Add the row to your profile patch (`$DSH_HOME/profiles/web/cordis.patch.yml`):
 
 Restart `dsh web`.
 
+> **⚠️ Important (host admission runs BEFORE any plugin)**: the harness rejects image messages
+> when the **currently selected session model** does not declare image input — the DeepSeek
+> adapter hardcodes `inputModalities: ["text"]`, so selecting DeepSeek blocks image sends
+> outright. This check cannot be bypassed by a plugin, so **select a vision entry model that
+> declares `input: [text, image]`** (e.g. OpenRouter `qwen/qwen3-vl-235b-a22b-instruct`).
+> The plugin then takes over: image turns stay on that vision model, text-only turns are
+> reverse-routed back to `textProvider` (DeepSeek by default) — same daily experience and cost.
+
 > **Prerequisite**: every vision model you name must exist in your OpenRouter
 > settings (`$DSH_HOME/settings.yaml` → `llm-pi-ai.providers.openrouter.models`)
 > with `input: [text, image]`, otherwise the harness rejects image content for it.
@@ -172,6 +180,8 @@ Restart `dsh web`.
 | `fallbacks` | `[]` | Fallback models of the same provider (shorthand). |
 | `providers` | `[]` | **Multi-provider form**: list of `{ provider, model, fallbacks[] }`; each entry is tried in order. Takes precedence over the shorthand. |
 | `routing` | `true` | Turn-level routing. `false` = tool only. |
+| `reverseRouting` | `true` | Route text-only turns back to `textProvider` (used with a vision entry model, see below). |
+| `textProvider` | `deepseek-official` / `deepseek-v4-pro` | The model text-only turns run on (your daily model). |
 | `tool` | `true` | Register `vision_describe`. `false` = routing only. |
 | `rewriteImages` | `true` | With routing disabled, rewrite uploaded image blocks into attachment markers. |
 | `downscale` | `true` | Downscale images above `downscaleMaxPixels`. |
@@ -282,6 +292,15 @@ discovery (OVHcloud AI Endpoints anonymous tier) by
 [dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision).
 
 ## FAQ
+
+**Why must the session model be a vision model instead of DeepSeek?**
+The harness prompt admission (runs before any plugin) rejects image messages when the current
+session model does not declare image input, and the DeepSeek adapter hardcodes
+`inputModalities: ["text"]` with no settings override. The entry model therefore has to be an
+image-capable one; `reverseRouting` sends text-only turns back to `textProvider` (DeepSeek),
+and image turns stay on the entry vision model. This is the same reason dsh-vision-proxy and
+modlens wrap provider routes.
+
 
 **Why turn-level instead of session-sticky routing?**
 You wanted "everything except images on my daily model". The image turn gets full

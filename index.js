@@ -37,6 +37,13 @@ export const Config = z.object({
     )
     .default([]),
   routing: z.boolean().default(true),
+  reverseRouting: z.boolean().default(true),
+  textProvider: z
+    .object({
+      provider: z.string().default('deepseek-official'),
+      model: z.string().default('deepseek-v4-pro'),
+    })
+    .default({}),
   tool: z.boolean().default(true),
   rewriteImages: z.boolean().default(true),
   downscale: z.boolean().default(true),
@@ -247,6 +254,22 @@ export function cacheKeyFor({ pairs, httpProviders, contentIds, wantJson, questi
   return `${chains.join(',')}|${[...(contentIds ?? [])].sort().join(',')}|${wantJson ? 'json' : 'text'}|${question}`
 }
 
+/**
+ * Reverse routing: the session's ENTRY model must declare image input or the
+ * harness prompt admission rejects image messages before any plugin runs.
+ * When a request has no image and its provider is one of the configured
+ * vision providers, rewrite it back to the text provider so daily text turns
+ * run on DeepSeek.
+ */
+export function reverseRouteTarget(config, { pairs, textProvider, hasAdapter }) {
+  if (config === undefined || config.provider === undefined) return undefined
+  if (config.provider === textProvider.provider) return undefined
+  const isVisionEntry = (pairs ?? []).some((pair) => pair.provider === config.provider)
+  if (!isVisionEntry) return undefined
+  if (!hasAdapter(textProvider.provider)) return undefined
+  return { provider: textProvider.provider, model: textProvider.model }
+}
+
 /** Downscale bytes whose intrinsic pixel count exceeds maxPixels; returns original bytes on failure. */
 export async function downscaleImage(bytes, maxPixels) {
   try {
@@ -429,6 +452,17 @@ export function apply(ctx, config = {}) {
   const timeoutMs =
     Number.isFinite(config.timeoutMs) && config.timeoutMs > 0 ? config.timeoutMs : 120000
   const routingEnabled = config.routing !== false
+  const reverseRoutingEnabled = routingEnabled && config.reverseRouting !== false
+  const textProvider = {
+    provider:
+      config.textProvider && typeof config.textProvider.provider === 'string' && config.textProvider.provider !== ''
+        ? config.textProvider.provider
+        : 'deepseek-official',
+    model:
+      config.textProvider && typeof config.textProvider.model === 'string' && config.textProvider.model !== ''
+        ? config.textProvider.model
+        : 'deepseek-v4-pro',
+  }
   const toolEnabled = config.tool !== false
   const rewriteEnabled = config.rewriteImages !== false
   const downscaleEnabled = config.downscale !== false
@@ -573,7 +607,20 @@ export function apply(ctx, config = {}) {
           }
         }
       }
-      if (!state.hasImage) return config0
+      if (!state.hasImage) {
+        // Reverse routing: the session's entry model is a vision provider
+        // (needed to pass the prompt admission); send text-only turns back
+        // to the text provider (DeepSeek) so daily work stays on it.
+        if (reverseRoutingEnabled) {
+          const target = reverseRouteTarget(config0, {
+            pairs,
+            textProvider,
+            hasAdapter: (provider) => adapterAvailable(ctx.llm, provider),
+          })
+          if (target !== undefined) return { ...config0, provider: target.provider, model: target.model }
+        }
+        return config0
+      }
       const current = pairs[state.failures]
       if (current === undefined) {
         const last = state.lastError ?? 'unknown error'
