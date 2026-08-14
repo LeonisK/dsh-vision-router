@@ -8,7 +8,8 @@ on:
 
 permissions:
   contents: read
-\	jobs:
+
+jobs:
   build-star-history:
     runs-on: ubuntu-latest
     steps:
