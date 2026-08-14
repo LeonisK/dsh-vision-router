@@ -23,6 +23,7 @@ import {
   stripImageBlocks,
   switchRoute,
   estimateTokens,
+  estimateMessages,
   trimMessagesToBudget,
 } from '../index.js'
 
@@ -425,4 +426,13 @@ test('estimateTokens and trimMessagesToBudget fit long conversations', () => {
 test('estimateTokens counts image blocks at a fixed cost', () => {
   const withImage = estimateTokens({ content: [{ type: 'image', attachment: {} }] })
   assert.ok(withImage >= 1445)
+})
+
+test('estimateMessages sums the array (the call-site bug guard)', () => {
+  const messages = [
+    { content: [{ type: 'text', text: 'x'.repeat(300) }] },
+    { content: [{ type: 'text', text: 'y'.repeat(300) }] },
+  ]
+  assert.ok(estimateMessages(messages) > 0)
+  assert.equal(estimateTokens(messages), 0) // an array alone must not be counted
 })

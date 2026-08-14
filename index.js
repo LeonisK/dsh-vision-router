@@ -290,6 +290,11 @@ export function estimateTokens(message) {
   return Math.ceil(chars / 2.5) + images * 1445
 }
 
+/** Sum of token estimates over a message array. */
+export function estimateMessages(messages) {
+  return (messages ?? []).reduce((sum, message) => sum + estimateTokens(message), 0)
+}
+
 /**
  * Truncate a conversation to fit a token budget: keep every system message,
  * always keep the last (current) message, then fill backwards from the end.
@@ -701,7 +706,7 @@ export function apply(ctx, config = {}) {
           }
           const reserve = 32768
           const messages =
-            estimateTokens(options.messages) > budget - reserve
+            estimateMessages(options.messages) > budget - reserve
               ? trimMessagesToBudget(options.messages, Math.max(budget - reserve, 16384))
               : options.messages
           let succeeded = false
