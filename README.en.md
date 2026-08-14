@@ -162,9 +162,15 @@ Restart `dsh web`.
 > **⚠️ Important (host admission runs BEFORE any plugin)**: the harness rejects image messages
 > when the **currently selected session model** does not declare image input — the DeepSeek
 > adapter hardcodes `inputModalities: ["text"]`, so selecting DeepSeek blocks image sends
-> outright. This check cannot be bypassed by a plugin, so **select a vision entry model that
-> declares `input: [text, image]`** (e.g. OpenRouter `qwen/qwen3-vl-235b-a22b-instruct`).
-> The plugin then takes over: image turns stay on that vision model, text-only turns are
+> outright. This check cannot be bypassed by a plugin, so pick one of:
+>
+> 1. **Recommended**: the wrapper route the plugin registers — **「DeepSeek + 自动识图」**
+>    (`deepseek-vision`) — declares image input (admission passes) and the selector shows
+>    "DeepSeek-V4-Pro（自动识图）", i.e. your primary model;
+> 2. or any vision model declaring `input: [text, image]` (e.g. OpenRouter
+>    `qwen/qwen3-vl-235b-a22b-instruct`) — the selector then shows the vision model's name.
+>
+> Either way the plugin takes over: image turns stay on the vision model, text-only turns are
 > reverse-routed back to `textProvider` (DeepSeek by default) — same daily experience and cost.
 
 > **Prerequisite**: every vision model you name must exist in your OpenRouter
@@ -181,6 +187,7 @@ Restart `dsh web`.
 | `providers` | `[]` | **Multi-provider form**: list of `{ provider, model, fallbacks[] }`; each entry is tried in order. Takes precedence over the shorthand. |
 | `routing` | `true` | Turn-level routing. `false` = tool only. |
 | `reverseRouting` | `true` | Route text-only turns back to `textProvider` (used with a vision entry model, see below). |
+| `wrapperRoute` | `deepseek-vision` | Wrapper route id shown in the picker as "DeepSeek + 自动识图"; empty string disables it. |
 | `textProvider` | `deepseek-official` / `deepseek-v4-pro` | The model text-only turns run on (your daily model). |
 | `tool` | `true` | Register `vision_describe`. `false` = routing only. |
 | `rewriteImages` | `true` | With routing disabled, rewrite uploaded image blocks into attachment markers. |
@@ -292,6 +299,12 @@ discovery (OVHcloud AI Endpoints anonymous tier) by
 [dsh-tool-vision](https://github.com/Scorp1o117/dsh-tool-vision).
 
 ## FAQ
+
+**What is the 「DeepSeek + 自动识图」 entry in the model picker?**
+The wrapper route this plugin registers (`deepseek-vision`): it declares image input to pass
+the host admission, while the actual requests are rewritten by the plugin waterfalls — image
+turns to the vision model, text turns back to DeepSeek. Select it as the session model and the
+selector keeps showing your primary model (DeepSeek-V4-Pro).
 
 **Why must the session model be a vision model instead of DeepSeek?**
 The harness prompt admission (runs before any plugin) rejects image messages when the current

@@ -38,6 +38,7 @@ export const Config = z.object({
     .default([]),
   routing: z.boolean().default(true),
   reverseRouting: z.boolean().default(true),
+  wrapperRoute: z.string().default('deepseek-vision'),
   textProvider: z
     .object({
       provider: z.string().default('deepseek-official'),
@@ -258,16 +259,28 @@ export function cacheKeyFor({ pairs, httpProviders, contentIds, wantJson, questi
  * Reverse routing: the session's ENTRY model must declare image input or the
  * harness prompt admission rejects image messages before any plugin runs.
  * When a request has no image and its provider is one of the configured
- * vision providers, rewrite it back to the text provider so daily text turns
- * run on DeepSeek.
+ * vision providers (or the wrapper route), rewrite it back to the text
+ * provider so daily text turns run on DeepSeek.
  */
-export function reverseRouteTarget(config, { pairs, textProvider, hasAdapter }) {
+export function reverseRouteTarget(config, { pairs, wrapperRoute, textProvider, hasAdapter }) {
   if (config === undefined || config.provider === undefined) return undefined
   if (config.provider === textProvider.provider) return undefined
-  const isVisionEntry = (pairs ?? []).some((pair) => pair.provider === config.provider)
+  const isVisionEntry =
+    (pairs ?? []).some((pair) => pair.provider === config.provider) ||
+    (wrapperRoute !== undefined && config.provider === wrapperRoute)
   if (!isVisionEntry) return undefined
   if (!hasAdapter(textProvider.provider)) return undefined
   return { provider: textProvider.provider, model: textProvider.model }
+}
+
+/**
+ * Route switch: when the provider changes, drop `reasoningEffort` — the
+ * persisted effort belongs to the previous provider and unsupported providers
+ * reject the request outright (issue #1).
+ */
+export function switchRoute(config, provider, model) {
+  const { reasoningEffort: _reasoningEffort, ...rest } = config ?? {}
+  return { ...rest, provider, model }
 }
 
 /** Downscale bytes whose intrinsic pixel count exceeds maxPixels; returns original bytes on failure. */
@@ -453,6 +466,10 @@ export function apply(ctx, config = {}) {
     Number.isFinite(config.timeoutMs) && config.timeoutMs > 0 ? config.timeoutMs : 120000
   const routingEnabled = config.routing !== false
   const reverseRoutingEnabled = routingEnabled && config.reverseRouting !== false
+  const wrapperRoute =
+    typeof config.wrapperRoute === 'string' && config.wrapperRoute !== ''
+      ? config.wrapperRoute
+      : undefined
   const textProvider = {
     provider:
       config.textProvider && typeof config.textProvider.provider === 'string' && config.textProvider.provider !== ''
@@ -484,6 +501,73 @@ export function apply(ctx, config = {}) {
     } catch {
       return undefined
     }
+  }
+
+  // ── wrapper route: admission + display shim ────────────────────────────────
+  //
+  // The harness prompt admission rejects image messages when the selected
+  // session model does not declare image input, and the DeepSeek adapter
+  // hardcodes text-only. This wrapper route (`deepseek-vision` by default)
+  // declares image input so the admission passes, shows up in the model
+  // picker as "DeepSeek + 自动识图", and delegates to the real text-provider
+  // adapter for anything the waterfalls did not rewrite.
+  if (wrapperRoute !== undefined) {
+    const WRAPPER_MODEL_IDS = ['deepseek-v4-pro', 'deepseek-v4-flash']
+    const wrapName = (name) => `${name ?? 'DeepSeek'}（自动识图）`
+    const delegateAdapter = () => {
+      try {
+        return ctx.llm.registration(textProvider.provider).adapter
+      } catch {
+        return undefined
+      }
+    }
+    const wrapperAdapter = {
+      providerInfo(provider) {
+        return { id: provider, name: 'DeepSeek + 自动识图' }
+      },
+      providerRetryPolicy() {
+        try {
+          return ctx.llm.registration(textProvider.provider).retryPolicy
+        } catch {
+          return undefined
+        }
+      },
+      async listModels() {
+        const real = delegateAdapter()
+        if (real === undefined) return []
+        try {
+          const listed = await real.listModels(textProvider.provider)
+          return listed
+            .filter((model) => WRAPPER_MODEL_IDS.includes(model.id))
+            .map((model) => ({
+              ...model,
+              provider: wrapperRoute,
+              name: wrapName(model.name),
+              inputModalities: ['text', 'image'],
+            }))
+        } catch {
+          return []
+        }
+      },
+      async resolveModel(provider, model) {
+        const real = delegateAdapter()
+        if (real === undefined) {
+          throw new Error('vision-router: the text provider adapter is not available')
+        }
+        const base = await real.resolveModel(textProvider.provider, model)
+        return {
+          ...base,
+          provider: wrapperRoute,
+          name: wrapName(base.name),
+          inputModalities: ['text', 'image'],
+        }
+      },
+      async *stream(options) {
+        yield* ctx.llm.stream({ ...options, provider: textProvider.provider })
+      },
+    }
+    const handle = ctx.llm.registerAdapter([wrapperRoute], wrapperAdapter)
+    ctx.effect(() => handle, 'vision-router: wrapper route')
   }
   // session -> Map<attachmentId, ref> (uploaded images visible to vision_describe)
   const sessionAttachments = new WeakMap()
@@ -614,10 +698,13 @@ export function apply(ctx, config = {}) {
         if (reverseRoutingEnabled) {
           const target = reverseRouteTarget(config0, {
             pairs,
+            wrapperRoute,
             textProvider,
             hasAdapter: (provider) => adapterAvailable(ctx.llm, provider),
           })
-          if (target !== undefined) return { ...config0, provider: target.provider, model: target.model }
+          if (target !== undefined) {
+            return switchRoute(config0, target.provider, target.model)
+          }
         }
         return config0
       }
@@ -636,7 +723,7 @@ export function apply(ctx, config = {}) {
       if (!adapterAvailable(ctx.llm, current.provider)) return config0
       if (config0.provider === current.provider) return config0
       state.routed = true
-      return { ...config0, provider: current.provider, model: current.model }
+      return switchRoute(config0, current.provider, current.model)
     })
 
     ctx.on('agent/request-error', async (payload, next) => {

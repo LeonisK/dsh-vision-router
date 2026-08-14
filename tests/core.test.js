@@ -20,6 +20,7 @@ import {
   httpProvidersOf,
   DEFAULT_HTTP_PROVIDERS,
   reverseRouteTarget,
+  switchRoute,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -340,5 +341,26 @@ test('reverseRouteTarget rewrites vision-entry text turns back to the text provi
       hasAdapter: () => false,
     }),
     undefined,
+  )
+})
+
+test('switchRoute drops reasoningEffort and keeps the rest', () => {
+  assert.deepEqual(
+    switchRoute({ provider: 'a', model: 'm', reasoningEffort: 'max', maxTokens: 4096 }, 'b', 'n'),
+    { provider: 'b', model: 'n', maxTokens: 4096 },
+  )
+  assert.deepEqual(switchRoute({ provider: 'a', model: 'm' }, 'b', 'n'), { provider: 'b', model: 'n' })
+})
+
+test('reverseRouteTarget treats the wrapper route as a vision entry', () => {
+  const opts = {
+    pairs: [{ provider: 'openrouter', model: 'qwen-vl' }],
+    wrapperRoute: 'deepseek-vision',
+    textProvider: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+    hasAdapter: () => true,
+  }
+  assert.deepEqual(
+    reverseRouteTarget({ provider: 'deepseek-vision', model: 'deepseek-v4-pro' }, opts),
+    { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
   )
 })
