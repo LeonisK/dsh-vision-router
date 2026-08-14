@@ -22,6 +22,8 @@ import {
   reverseRouteTarget,
   stripImageBlocks,
   replaceImageBlocksWithMemory,
+  collectImageBlocks,
+  lastUserText,
   switchRoute,
   estimateTokens,
   estimateMessages,
@@ -466,4 +468,14 @@ test('replaceImageBlocksWithMemory accepts a plain object map', () => {
     { x: '内容' },
   )
   assert.ok(out[0].content[0].text.includes('内容'))
+})
+
+test('lastUserText returns the current user question', () => {
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: '旧问题' }] },
+    { role: 'assistant', content: [{ type: 'text', text: '回答' }] },
+    { role: 'user', content: [{ type: 'image', attachment: { attachmentId: 'i' } }, { type: 'text', text: '新问题' }] },
+  ]
+  assert.equal(lastUserText(messages), '新问题')
+  assert.equal(lastUserText([{ role: 'assistant', content: [] }]), '')
 })
