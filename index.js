@@ -31,8 +31,8 @@ export const name = 'vision-router'
 export const inject = ['tools', 'llm']
 
 export const Config = z.object({
-  provider: z.string().default('openrouter'),
-  model: z.string().default('qwen/qwen3-vl-235b-a22b-instruct'),
+  provider: z.string().default('vision-http'),
+  model: z.string().default('ovh/Qwen2.5-VL-72B-Instruct'),
   fallbacks: z.array(z.string()).default([]),
   providers: z
     .array(
@@ -137,13 +137,13 @@ export function providersOf(config = {}) {
   }
   if (list.length > 0) return list
   const provider =
-    typeof config.provider === 'string' && config.provider !== '' ? config.provider : 'openrouter'
+    typeof config.provider === 'string' && config.provider !== '' ? config.provider : 'vision-http'
   const models = []
   if (typeof config.model === 'string' && config.model !== '') models.push(config.model)
   for (const fallback of config.fallbacks ?? []) {
     if (typeof fallback === 'string' && fallback !== '') models.push(fallback)
   }
-  if (models.length === 0) models.push('qwen/qwen3-vl-235b-a22b-instruct')
+  if (models.length === 0) models.push('ovh/Qwen2.5-VL-72B-Instruct')
   return models.map((model) => ({ provider, model }))
 }
 
@@ -706,6 +706,19 @@ export function httpProvidersOf(config, allowDefault = true) {
   return allowDefault ? DEFAULT_HTTP_PROVIDERS : []
 }
 
+/**
+ * Drop http providers already covered by a `vision-http` pair, so the free
+ * endpoint (2 req/min) is never asked twice for the same image.
+ */
+export function dedupeHttpProviders(pairs, httpProviders) {
+  const covered = new Set(
+    (pairs ?? [])
+      .filter((pair) => pair && pair.provider === 'vision-http')
+      .map((pair) => pair.model),
+  )
+  return (httpProviders ?? []).filter((p) => p && !covered.has(`${p.name}/${p.model}`))
+}
+
 /** Convert harness image/text blocks plus resolved image bytes into OpenAI wire content. */
 export function toOpenAIContent(blocks, bytesOf) {
   return blocks.map((block) => {
@@ -881,7 +894,10 @@ export function apply(ctx, config = {}) {
     Number.isFinite(config.cacheMaxEntries) ? config.cacheMaxEntries : 200,
     (Number.isFinite(config.cacheTtlSeconds) ? config.cacheTtlSeconds : 3600) * 1000,
   )
-  const httpProviders = httpProvidersOf(config, config.freeFallback !== false)
+  const httpProviders = dedupeHttpProviders(
+    pairs,
+    httpProvidersOf(config, config.freeFallback !== false),
+  )
   const resolveCredential = async (ref) => {
     const credentials = ctx.get('credentials')
     if (credentials === undefined) return undefined
@@ -890,6 +906,110 @@ export function apply(ctx, config = {}) {
     } catch {
       return undefined
     }
+  }
+
+  // ── vision-http route: first-class llm route over the OpenAI-compatible
+  // http providers. The built-in OVHcloud anonymous endpoint (no account, no
+  // key, 2 req/min/IP) is the DEFAULT vision model, so a fresh install works
+  // for free without any credential. Configured `httpProviders` join the same
+  // route; the model picker shows them like any other model.
+  const HTTP_ROUTE = 'vision-http'
+  const httpEntries = httpProviders.map((provider) => ({
+    id: `${provider.name}/${provider.model}`,
+    name: `${provider.name}/${provider.model}`,
+    provider,
+  }))
+  if (httpEntries.length > 0) {
+    const httpAdapter = {
+      providerInfo(provider) {
+        return { id: provider, name: 'Vision HTTP' }
+      },
+      providerRetryPolicy() {
+        return undefined
+      },
+      async listModels() {
+        return httpEntries.map((entry) => ({
+          provider: HTTP_ROUTE,
+          id: entry.id,
+          name: entry.name,
+          inputModalities: ['text', 'image'],
+        }))
+      },
+      async resolveModel(_provider, model) {
+        const entry = httpEntries.find((candidate) => candidate.id === model)
+        if (entry === undefined) {
+          throw new Error(`vision-http: unknown model "${model}"`)
+        }
+        return {
+          provider: HTTP_ROUTE,
+          model,
+          name: entry.name,
+          inputModalities: ['text', 'image'],
+          context: { contextWindow: 32768 },
+          reasoning: { efforts: ['off'] },
+        }
+      },
+      async *stream(options) {
+        const entry = httpEntries.find((candidate) => candidate.id === options.model)
+        if (entry === undefined) {
+          yield {
+            type: 'finish',
+            reason: {
+              kind: 'error',
+              failure: { message: `vision-http: unknown model "${options.model}"`, code: 'NO_ADAPTER' },
+            },
+          }
+          return
+        }
+        const attachments = ctx.get('attachments')
+        const openAIMessages = []
+        for (const message of options.messages ?? []) {
+          if (!message || !Array.isArray(message.content)) continue
+          const content = []
+          for (const block of message.content) {
+            if (block && block.type === 'image' && block.attachment) {
+              if (attachments === undefined) continue
+              try {
+                const stored = await attachments.readImage(block.attachment)
+                content.push(...toOpenAIContent([block], () => stored.data))
+              } catch (error) {
+                ctx.logger?.warn(
+                  'vision-http: failed to read image attachment: %s',
+                  error && error.message ? error.message : String(error),
+                )
+              }
+            } else if (block && block.type === 'text' && typeof block.text === 'string') {
+              content.push({ type: 'text', text: block.text })
+            }
+          }
+          if (content.length > 0) openAIMessages.push({ role: message.role, content })
+        }
+        let text = ''
+        try {
+          text = await callOpenAICompatible(entry.provider, openAIMessages, {
+            maxTokens: entry.provider.maxTokens ?? 4096,
+            signal: options.signal,
+            resolveCredential,
+          })
+        } catch (error) {
+          yield {
+            type: 'finish',
+            reason: {
+              kind: 'error',
+              failure: {
+                message: error && error.message ? error.message : String(error),
+                code: 'HTTP_PROVIDER_FAILED',
+              },
+            },
+          }
+          return
+        }
+        if (text !== '') yield { type: 'text-delta', text }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    }
+    const httpHandle = ctx.llm.registerAdapter([HTTP_ROUTE], httpAdapter)
+    ctx.effect(() => httpHandle, 'vision-router: vision-http route')
   }
 
   // ── wrapper route: admission + display shim ────────────────────────────────

@@ -22,6 +22,7 @@ import {
   reverseRouteTarget,
   stripImageBlocks,
   replaceImageBlocksWithMemory,
+  dedupeHttpProviders,
   collectImageBlocks,
   lastUserText,
   switchRoute,
@@ -147,7 +148,7 @@ test('providersOf flattens the single-provider shorthand', () => {
       { provider: 'openrouter', model: 'm2' },
     ],
   )
-  assert.deepEqual(providersOf({}), [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }])
+  assert.deepEqual(providersOf({}), [{ provider: 'vision-http', model: 'ovh/Qwen2.5-VL-72B-Instruct' }])
 })
 
 test('providersOf flattens the multi-provider form and prefers it', () => {
@@ -586,4 +587,17 @@ test('posterizeSvg vectorizes a tiny PNG into SVG', async () => {
   const svg = await posterizeSvg(png, 2)
   assert.ok(svg.includes('<svg'))
   assert.ok(svg.length > 100)
+})
+
+
+test('dedupeHttpProviders drops endpoints already covered by vision-http pairs', () => {
+  const http = [{ name: 'ovh', model: 'Qwen2.5-VL-72B-Instruct', baseURL: 'https://x/v1' }]
+  assert.deepEqual(
+    dedupeHttpProviders([{ provider: 'vision-http', model: 'ovh/Qwen2.5-VL-72B-Instruct' }], http),
+    [],
+  )
+  assert.deepEqual(
+    dedupeHttpProviders([{ provider: 'openrouter', model: 'qwen' }], http),
+    http,
+  )
 })
