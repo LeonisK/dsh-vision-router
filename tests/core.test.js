@@ -22,6 +22,7 @@ import {
   reverseRouteTarget,
   stripImageBlocks,
   replaceImageBlocksWithMemory,
+  rewriteHistoryImages,
   dedupeHttpProviders,
   collectImageBlocks,
   lastUserText,
@@ -482,6 +483,38 @@ test('replaceImageBlocksWithMemory accepts a plain object map', () => {
     { x: '内容' },
   )
   assert.ok(out[0].content[0].text.includes('内容'))
+})
+
+test('rewriteHistoryImages uses cached descriptions and markers for the rest', () => {
+  const memory = new Map([['img-1', '一只戴帽子的猫']])
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'image', attachment: { attachmentId: 'img-1', name: 'a.png' } },
+        { type: 'image', attachment: { attachmentId: 'img-2', name: 'b.png' } },
+        { type: 'text', text: '两张图' },
+      ],
+    },
+  ]
+  const out = rewriteHistoryImages(messages, memory)
+  const blocks = out.messages[0].content
+  assert.equal(blocks.filter((b) => b.type === 'image').length, 0)
+  assert.ok(blocks[0].text.includes('戴帽子的猫'))
+  assert.ok(blocks[1].text.includes('vision_describe'))
+  assert.ok(blocks[1].text.includes('img-2'))
+  assert.equal(blocks[2].text, '两张图')
+  assert.equal(out.attachments.length, 1)
+  assert.equal(out.attachments[0].attachmentId, 'img-2')
+})
+
+test('rewriteHistoryImages returns the same messages array when nothing changed', () => {
+  const messages = [{ role: 'user', content: [{ type: 'text', text: '纯文本' }] }]
+  const out = rewriteHistoryImages(messages, new Map())
+  assert.equal(out.messages, messages)
+  assert.equal(out.attachments.length, 0)
+  const empty = rewriteHistoryImages(undefined, new Map())
+  assert.equal(empty.messages, undefined)
 })
 
 test('lastUserText returns the current user question', () => {
