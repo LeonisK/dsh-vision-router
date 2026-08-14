@@ -6,10 +6,12 @@
   "type": "module",
   "main": "index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./client": "./lib/client.js"
   },
   "files": [
     "index.js",
+    "lib",
     "README.md",
     "README.en.md",
     "LICENSE",
@@ -41,5 +43,14 @@
     "onlyBuiltDependencies": [
       "sharp"
     ]
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
   }
 }

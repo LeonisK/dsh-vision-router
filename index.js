@@ -744,42 +744,48 @@ async function visionAnswer(llm, options) {
 }
 
 export function apply(ctx, config = {}) {
-  const pairs = providersOf(config)
+  // Live configuration: composition entry at boot, then the resolved settings
+  // section once the settings service mounts (installSettingsSection below).
+  let current = () => config
+  const pairs = () => providersOf(current())
   // attachmentId -> description captured from a successful vision turn, so
   // later text turns can replace stripped image blocks with real knowledge.
   const imageMemory = new Map()
-  const timeoutMs =
-    Number.isFinite(config.timeoutMs) && config.timeoutMs > 0 ? config.timeoutMs : 120000
-  const routingEnabled = config.routing !== false
-  const reverseRoutingEnabled = routingEnabled && config.reverseRouting !== false
-  const wrapperRoute =
-    typeof config.wrapperRoute === 'string' && config.wrapperRoute !== ''
-      ? config.wrapperRoute
-      : undefined
-  let wrapperRegistered = false
-  const textProvider = {
-    provider:
-      config.textProvider && typeof config.textProvider.provider === 'string' && config.textProvider.provider !== ''
-        ? config.textProvider.provider
-        : 'deepseek-official',
-    model:
-      config.textProvider && typeof config.textProvider.model === 'string' && config.textProvider.model !== ''
-        ? config.textProvider.model
-        : 'deepseek-v4-pro',
+  const timeoutMs = () => {
+    const value = current().timeoutMs
+    return Number.isFinite(value) && value > 0 ? value : 120000
   }
-  const toolEnabled = config.tool !== false
-  const rewriteEnabled = config.rewriteImages !== false
-  const downscaleEnabled = config.downscale !== false
-  const downscaleMaxPixels =
-    Number.isFinite(config.downscaleMaxPixels) && config.downscaleMaxPixels > 0
-      ? config.downscaleMaxPixels
-      : 8000000
-  const cacheEnabled = config.cache !== false
+  const routingEnabled = () => current().routing !== false
+  const reverseRoutingEnabled = () => routingEnabled() && current().reverseRouting !== false
+  const wrapperRoute = () => {
+    const value = current().wrapperRoute
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
+  let wrapperRegistered = false
+  const textProvider = () => {
+    const text = current().textProvider
+    return {
+      provider:
+        text && typeof text.provider === 'string' && text.provider !== ''
+          ? text.provider
+          : 'deepseek-official',
+      model:
+        text && typeof text.model === 'string' && text.model !== '' ? text.model : 'deepseek-v4-pro',
+    }
+  }
+  const toolEnabled = () => current().tool !== false
+  const rewriteEnabled = () => current().rewriteImages !== false
+  const downscaleEnabled = () => current().downscale !== false
+  const downscaleMaxPixels = () => {
+    const value = current().downscaleMaxPixels
+    return Number.isFinite(value) && value > 0 ? value : 8000000
+  }
+  const cacheEnabled = () => current().cache !== false
   const cache = createCache(
     Number.isFinite(config.cacheMaxEntries) ? config.cacheMaxEntries : 200,
     (Number.isFinite(config.cacheTtlSeconds) ? config.cacheTtlSeconds : 3600) * 1000,
   )
-  const httpProviders = httpProvidersOf(config, config.freeFallback !== false)
+  const httpProviders = () => httpProvidersOf(current(), current().freeFallback !== false)
   const resolveCredential = async (ref) => {
     const credentials = ctx.get('credentials')
     if (credentials === undefined) return undefined
@@ -798,12 +804,12 @@ export function apply(ctx, config = {}) {
   // declares image input so the admission passes, shows up in the model
   // picker as "DeepSeek + 自动识图", and delegates to the real text-provider
   // adapter for anything the waterfalls did not rewrite.
-  if (wrapperRoute !== undefined) {
+  if (wrapperRoute() !== undefined) {
     const WRAPPER_MODEL_IDS = ['deepseek-v4-pro', 'deepseek-v4-flash']
     const wrapName = (name) => `${name ?? 'DeepSeek'}（自动识图）`
     const delegateAdapter = () => {
       try {
-        return ctx.llm.registration(textProvider.provider).adapter
+        return ctx.llm.registration(textProvider().provider).adapter
       } catch {
         return undefined
       }
@@ -814,7 +820,7 @@ export function apply(ctx, config = {}) {
       },
       providerRetryPolicy() {
         try {
-          return ctx.llm.registration(textProvider.provider).retryPolicy
+          return ctx.llm.registration(textProvider().provider).retryPolicy
         } catch {
           return undefined
         }
@@ -823,12 +829,12 @@ export function apply(ctx, config = {}) {
         const real = delegateAdapter()
         if (real === undefined) return []
         try {
-          const listed = await real.listModels(textProvider.provider)
+          const listed = await real.listModels(textProvider().provider)
           return listed
             .filter((model) => WRAPPER_MODEL_IDS.includes(model.id))
             .map((model) => ({
               ...model,
-              provider: wrapperRoute,
+              provider: wrapperRoute(),
               name: wrapName(model.name),
               inputModalities: ['text', 'image'],
             }))
@@ -841,10 +847,10 @@ export function apply(ctx, config = {}) {
         if (real === undefined) {
           throw new Error('vision-router: the text provider adapter is not available')
         }
-        const base = await real.resolveModel(textProvider.provider, model)
+        const base = await real.resolveModel(textProvider().provider, model)
         return {
           ...base,
-          provider: wrapperRoute,
+          provider: wrapperRoute(),
           name: wrapName(base.name),
           inputModalities: ['text', 'image'],
         }
@@ -876,7 +882,7 @@ export function apply(ctx, config = {}) {
         const pending = imageEntries.filter(
           (entry) => !imageMemory.has(entry.id) || currentIds.has(entry.id),
         )
-        if (pending.length > 0 && chainRoute !== undefined) {
+        if (pending.length > 0 && chainRoute() !== undefined) {
           const instruction = question
             ? `用户的问题是：「${question.slice(0, 1500)}」。请仔细查看图片，直接回答这个问题，` +
               '并在回答中给出图片里与该问题相关的完整细节（图中的文字请尽量原样转述）。' +
@@ -888,8 +894,8 @@ export function apply(ctx, config = {}) {
               let text = ''
               try {
                 for await (const chunk of ctx.llm.stream({
-                  provider: chainRoute,
-                  model: `${pairs[0].provider}/${pairs[0].model}`,
+                  provider: chainRoute(),
+                  model: `${pairs()[0].provider}/${pairs()[0].model}`,
                   messages: [
                     {
                       role: 'user',
@@ -918,12 +924,12 @@ export function apply(ctx, config = {}) {
         }
         yield* ctx.llm.stream({
           ...options,
-          provider: textProvider.provider,
+          provider: textProvider().provider,
           messages: replaceImageBlocksWithMemory(messages, imageMemory),
         })
       },
     }
-    const handle = ctx.llm.registerAdapter([wrapperRoute], wrapperAdapter)
+    const handle = ctx.llm.registerAdapter([wrapperRoute()], wrapperAdapter)
     wrapperRegistered = true
     ctx.effect(() => handle, 'vision-router: wrapper route')
   }
@@ -935,12 +941,12 @@ export function apply(ctx, config = {}) {
   // model-switch retry. To make fallback reliable, image turns are routed to
   // this chain adapter instead; it walks the configured providers itself and
   // only surfaces a failure once every model has failed.
-  const chainRoute =
-    typeof config.chainRoute === 'string' && config.chainRoute !== ''
-      ? config.chainRoute
-      : undefined
+  const chainRoute = () => {
+    const value = current().chainRoute
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
 
-  if (chainRoute !== undefined && routingEnabled) {
+  if (chainRoute() !== undefined && routingEnabled()) {
     const chainAdapter = {
       providerInfo(provider) {
         return { id: provider, name: 'Vision Chain' }
@@ -949,8 +955,8 @@ export function apply(ctx, config = {}) {
         return undefined
       },
       async listModels() {
-        return pairs.map((pair) => ({
-          provider: chainRoute,
+        return pairs().map((pair) => ({
+          provider: chainRoute(),
           id: `${pair.provider}/${pair.model}`,
           name: `${pair.provider}/${pair.model}`,
           inputModalities: ['text', 'image'],
@@ -958,7 +964,7 @@ export function apply(ctx, config = {}) {
       },
       async resolveModel(provider, model) {
         return {
-          provider: chainRoute,
+          provider: chainRoute(),
           id: model,
           name: model,
           inputModalities: ['text', 'image'],
@@ -987,14 +993,14 @@ export function apply(ctx, config = {}) {
         // session easily exceeds the 200-260k windows of typical vision models.
         let defaultBudget = 256000
         try {
-          const base = await ctx.llm.resolveModelInfo(pairs[0].provider, pairs[0].model)
+          const base = await ctx.llm.resolveModelInfo(pairs()[0].provider, pairs()[0].model)
           if (base.context && base.context.contextWindow > 0) {
             defaultBudget = base.context.contextWindow
           }
         } catch {
           /* keep default */
         }
-        for (const pair of pairs) {
+        for (const pair of pairs()) {
           let budget = defaultBudget
           try {
             const info = await ctx.llm.resolveModelInfo(pair.provider, pair.model)
@@ -1063,7 +1069,7 @@ export function apply(ctx, config = {}) {
         }
       },
     }
-    const handle = ctx.llm.registerAdapter([chainRoute], chainAdapter)
+    const handle = ctx.llm.registerAdapter([chainRoute()], chainAdapter)
     ctx.effect(() => handle, 'vision-router: chain route')
   }
   // session -> Map<attachmentId, ref> (uploaded images visible to vision_describe)
@@ -1154,11 +1160,11 @@ export function apply(ctx, config = {}) {
       recordUploadedAttachments(session, rewrite.attachments)
       // With routing disabled, rewrite uploaded image blocks into attachment
       // markers so the text-only model can still query them via vision_describe.
-      if (rewriteEnabled && !routingEnabled) {
+      if (rewriteEnabled() && !routingEnabled()) {
         return { ...decision, messages: rewrite.messages }
       }
     }
-    if (routingEnabled) {
+    if (routingEnabled()) {
       const events = session.events ?? []
       turnState.set(session, {
         turn: payload.turn,
@@ -1169,7 +1175,7 @@ export function apply(ctx, config = {}) {
     return decision
   })
 
-  if (routingEnabled) {
+  if (routingEnabled()) {
     ctx.on('agent/request', async (payload, next) => {
       const config0 = await next()
       const session = payload.agent && payload.agent.session
@@ -1189,12 +1195,12 @@ export function apply(ctx, config = {}) {
         // Reverse routing: the session's entry model is a vision provider
         // (needed to pass the prompt admission); send text-only turns back
         // to the text provider (DeepSeek) so daily work stays on it.
-        if (reverseRoutingEnabled) {
+        if (reverseRoutingEnabled()) {
           const target = reverseRouteTarget(config0, {
-            pairs,
-            wrapperRoute,
+            pairs: pairs(),
+            wrapperRoute: wrapperRoute(),
             wrapperRegistered,
-            textProvider,
+            textProvider: textProvider(),
             hasAdapter: (provider) => adapterAvailable(ctx.llm, provider),
           })
           if (target !== undefined) {
@@ -1206,17 +1212,17 @@ export function apply(ctx, config = {}) {
       // Route the image turn to the chain adapter (falls back under our own
       // control), or directly to the first vision model when the chain route
       // is disabled.
-      if (chainRoute !== undefined) {
-        if (config0.provider === chainRoute) return config0
-        return switchRoute(config0, chainRoute, `${pairs[0].provider}/${pairs[0].model}`)
+      if (chainRoute() !== undefined) {
+        if (config0.provider === chainRoute()) return config0
+        return switchRoute(config0, chainRoute(), `${pairs()[0].provider}/${pairs()[0].model}`)
       }
-      const current = pairs[0]
+      const first = pairs()[0]
       if (config0.provider === current.provider) return config0
       return switchRoute(config0, current.provider, current.model)
     })
   }
 
-  if (toolEnabled) {
+  if (toolEnabled()) {
     const deepToolDefs = []
     deepToolDefs.push({
       name: 'vision_describe',
@@ -1259,6 +1265,9 @@ export function apply(ctx, config = {}) {
         render: (_args, value) => [{ type: 'text', text: value }],
       },
       async execute(args, exec) {
+        if (!toolEnabled()) {
+          throw new Error('vision_describe: the vision tool is disabled in the vision-router settings')
+        }
         const attachments = ctx.get('attachments')
         if (attachments === undefined) {
           throw new Error(
@@ -1294,8 +1303,8 @@ export function apply(ctx, config = {}) {
               `vision_describe: failed to read ${path} (${error && error.message ? error.message : String(error)})`,
             )
           }
-          if (downscaleEnabled) {
-            const resized = await downscaleImage(bytes, downscaleMaxPixels)
+          if (downscaleEnabled()) {
+            const resized = await downscaleImage(bytes, downscaleMaxPixels())
             if (resized !== bytes) {
               ctx.logger?.info('vision-router: downscaled %s for the vision call', path)
             }
@@ -1342,15 +1351,15 @@ export function apply(ctx, config = {}) {
         const jsonInstruction = wantJson
           ? '\n\nAnswer with a SINGLE valid JSON object and nothing else (no markdown fences, no prose).'
           : ''
-        const usablePairs = pairs.filter((pair) => adapterAvailable(ctx.llm, pair.provider))
+        const usablePairs = pairs().filter((pair) => adapterAvailable(ctx.llm, pair.provider))
         const key = cacheKeyFor({
-          pairs,
-          httpProviders,
+          pairs: pairs(),
+          httpProviders: httpProviders(),
           contentIds,
           wantJson,
           question,
         })
-        if (cacheEnabled) {
+        if (cacheEnabled()) {
           const hit = cache.get(key)
           if (hit !== undefined) return hit
         }
@@ -1362,7 +1371,7 @@ export function apply(ctx, config = {}) {
             source: { kind: 'plugin', plugin: 'dsh-vision-router' },
           },
         ]
-        const signal = AbortSignal.timeout(timeoutMs)
+        const signal = AbortSignal.timeout(timeoutMs())
         const errors = []
 
         for (const pair of usablePairs) {
@@ -1380,7 +1389,7 @@ export function apply(ctx, config = {}) {
                 const parsed = extractJson(text)
                 if (parsed !== undefined) {
                   const compact = JSON.stringify(parsed)
-                  if (cacheEnabled) cache.set(key, compact)
+                  if (cacheEnabled()) cache.set(key, compact)
                   return compact
                 }
                 if (attempt === 0) {
@@ -1407,15 +1416,15 @@ export function apply(ctx, config = {}) {
                 }
               }
               const fallback = `vision_describe: the model did not produce valid JSON. Raw output:\n${text.slice(0, 2000)}`
-              if (cacheEnabled) cache.set(key, fallback)
+              if (cacheEnabled()) cache.set(key, fallback)
               return fallback
             }
             if (text !== '') {
-              if (cacheEnabled) cache.set(key, text)
+              if (cacheEnabled()) cache.set(key, text)
               return text
             }
             const empty = '(the vision model returned empty content)'
-            if (cacheEnabled) cache.set(key, empty)
+            if (cacheEnabled()) cache.set(key, empty)
             return empty
           } catch (error) {
             const message = error && error.message ? error.message : String(error)
@@ -1427,7 +1436,7 @@ export function apply(ctx, config = {}) {
         // Direct HTTP providers (built-in keyless OVHcloud by default) are the
         // final fallbacks: they bypass the harness llm service entirely, so the
         // anonymous free endpoint works without any credential.
-        for (const provider of httpProviders) {
+        for (const provider of httpProviders()) {
           try {
             // Precompute bytes once per block (attachments.readImage is async).
             const openAIBlocks = []
@@ -1459,7 +1468,7 @@ export function apply(ctx, config = {}) {
                 const parsed = extractJson(text)
                 if (parsed !== undefined) {
                   const compact = JSON.stringify(parsed)
-                  if (cacheEnabled) cache.set(key, compact)
+                  if (cacheEnabled()) cache.set(key, compact)
                   return compact
                 }
                 if (attempt === 0) {
@@ -1469,11 +1478,11 @@ export function apply(ctx, config = {}) {
                 }
               }
               const fallback = `vision_describe: the model did not produce valid JSON. Raw output:\n${text.slice(0, 2000)}`
-              if (cacheEnabled) cache.set(key, fallback)
+              if (cacheEnabled()) cache.set(key, fallback)
               return fallback
             }
             if (text !== '') {
-              if (cacheEnabled) cache.set(key, text)
+              if (cacheEnabled()) cache.set(key, text)
               return text
             }
           } catch (error) {
@@ -1555,7 +1564,7 @@ export function apply(ctx, config = {}) {
     const answerVision = async (imageBytes, mediaType, instruction) => {
       const errors = []
       const block = await visionBlocksFromBytes(imageBytes, mediaType)
-      const signal = AbortSignal.timeout(timeoutMs)
+      const signal = AbortSignal.timeout(timeoutMs())
       const usablePairs = pairs.filter((pair) => adapterAvailable(ctx.llm, pair.provider))
       for (const pair of usablePairs) {
         try {
@@ -1573,7 +1582,7 @@ export function apply(ctx, config = {}) {
           errors.push(`${pair.provider}/${pair.model}: ${error && error.message ? error.message : String(error)}`)
         }
       }
-      for (const provider of httpProviders) {
+      for (const provider of httpProviders()) {
         try {
           const stored = await ctx.get('attachments').readImage(block.attachment)
           const content = toOpenAIContent([block], () => stored.data)
@@ -1846,4 +1855,28 @@ export function apply(ctx, config = {}) {
       'vision-router: deep tools',
     )
   }
+
+  // ── settings seam: the Web 设置 > 插件 > 插件配置 panel owns a
+  // `vision-router` settings section; its resolved value (schema defaults over
+  // the composition entry over the user document) feeds `current()` above.
+  //
+  // Wired against the settings SERVICE directly rather than importing
+  // @deepseek-ai/dsh-settings: the published npm build trails the deployment,
+  // and the service API is the stable contract here.
+  ctx.inject(['settings'], (sctx) => {
+    const scope = sctx.settings.register('vision-router', Config, {
+      base: config,
+    })
+    current = () => scope.get()
+    sctx.effect(
+      () => () => {
+        // The settings provider went away: fall back to the composition entry.
+        current = () => config
+      },
+      'vision-router: settings fallback',
+    )
+    scope.watch(() => {
+      // Every consumer reads current() per call; nothing to re-register.
+    })
+  })
 }
