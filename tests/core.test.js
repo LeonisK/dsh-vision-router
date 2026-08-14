@@ -21,6 +21,7 @@ import {
   DEFAULT_HTTP_PROVIDERS,
   reverseRouteTarget,
   stripImageBlocks,
+  replaceImageBlocksWithMemory,
   switchRoute,
   estimateTokens,
   estimateMessages,
@@ -435,4 +436,34 @@ test('estimateMessages sums the array (the call-site bug guard)', () => {
   ]
   assert.ok(estimateMessages(messages) > 0)
   assert.equal(estimateTokens(messages), 0) // an array alone must not be counted
+})
+
+test('replaceImageBlocksWithMemory substitutes cached descriptions and honest placeholders', () => {
+  const memory = new Map([['img-1', '一只戴帽子的猫']])
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'image', attachment: { attachmentId: 'img-1', name: 'a.png' } },
+        { type: 'image', attachment: { attachmentId: 'img-2', name: 'b.png' } },
+        { type: 'text', text: '两张图' },
+      ],
+    },
+  ]
+  const out = replaceImageBlocksWithMemory(messages, memory)
+  const blocks = out[0].content
+  assert.equal(blocks.filter((b) => b.type === 'image').length, 0)
+  assert.ok(blocks[0].text.includes('戴帽子的猫'))
+  assert.ok(blocks[0].text.includes('a.png'))
+  assert.ok(blocks[1].text.includes('b.png'))
+  assert.ok(blocks[1].text.includes('未随本次文本请求发送'))
+  assert.equal(blocks[2].text, '两张图')
+})
+
+test('replaceImageBlocksWithMemory accepts a plain object map', () => {
+  const out = replaceImageBlocksWithMemory(
+    [{ role: 'user', content: [{ type: 'image', attachment: { attachmentId: 'x' } }] }],
+    { x: '内容' },
+  )
+  assert.ok(out[0].content[0].text.includes('内容'))
 })

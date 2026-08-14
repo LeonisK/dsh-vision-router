@@ -268,6 +268,43 @@ export function stripImageBlocks(messages) {
   })
 }
 
+/**
+ * Replace image blocks with text so a text-only model still knows the image
+ * existed — and knows what it contained when a previous vision turn recorded
+ * a description in `memory` (attachmentId -> description text).
+ */
+export function replaceImageBlocksWithMemory(messages, memory) {
+  const mem = memory instanceof Map ? memory : new Map(Object.entries(memory ?? {}))
+  return (messages ?? []).map((message) => {
+    if (!message || !Array.isArray(message.content)) return message
+    if (!message.content.some((block) => block && block.type === 'image')) return message
+    return {
+      ...message,
+      content: message.content.flatMap((block) => {
+        if (!block || block.type !== 'image') return [block]
+        const attachment = block.attachment || {}
+        const id = attachment.attachmentId || attachment.id
+        const name = attachment.name || '图片'
+        const entry = id ? mem.get(id) : undefined
+        if (entry && typeof entry === 'string' && entry.trim()) {
+          return [
+            {
+              type: 'text',
+              text: `[图片「${name}」此前由视觉模型读取，内容记录：${entry.trim().slice(0, 2000)}]`,
+            },
+          ]
+        }
+        return [
+          {
+            type: 'text',
+            text: `[图片附件「${name}」：对话中曾发送过这张图片，但它的视觉内容未随本次文本请求发送，我无法直接看到]`,
+          },
+        ]
+      }),
+    }
+  })
+}
+
 /** Rough token estimate for one message (no tokenizer; conservative on purpose). */
 export function estimateTokens(message) {
   let chars = 0
@@ -530,6 +567,9 @@ async function visionAnswer(llm, options) {
 
 export function apply(ctx, config = {}) {
   const pairs = providersOf(config)
+  // attachmentId -> description captured from a successful vision turn, so
+  // later text turns can replace stripped image blocks with real knowledge.
+  const imageMemory = new Map()
   const timeoutMs =
     Number.isFinite(config.timeoutMs) && config.timeoutMs > 0 ? config.timeoutMs : 120000
   const routingEnabled = config.routing !== false
@@ -635,7 +675,7 @@ export function apply(ctx, config = {}) {
         yield* ctx.llm.stream({
           ...options,
           provider: textProvider.provider,
-          messages: stripImageBlocks(options.messages),
+          messages: replaceImageBlocksWithMemory(options.messages, imageMemory),
         })
       },
     }
@@ -683,6 +723,22 @@ export function apply(ctx, config = {}) {
       },
       async *stream(options) {
         const failures = []
+        // Remember which images this turn is about, so a successful vision
+        // answer can be cached and later text turns can cite it.
+        const imageIds = []
+        const messages = options.messages ?? []
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const message = messages[i]
+          if (!message || message.role !== 'user' || !Array.isArray(message.content)) continue
+          for (const block of message.content) {
+            if (!block || block.type !== 'image') continue
+            const attachment = block.attachment || {}
+            const id = attachment.attachmentId || attachment.id
+            if (id) imageIds.push(id)
+          }
+          if (imageIds.length > 0) break
+        }
+        let finalText = ''
         // Fit the conversation into the target model's context window: a long
         // session easily exceeds the 200-260k windows of typical vision models.
         let defaultBudget = 256000
@@ -730,9 +786,14 @@ export function apply(ctx, config = {}) {
                 }
                 // 'stop' / 'max-tokens' / 'tool-calls' are success.
                 succeeded = true
+                if (finalText.trim() && imageIds.length > 0) {
+                  const record = finalText.trim()
+                  for (const id of imageIds) imageMemory.set(id, record)
+                }
                 yield chunk
                 break
               }
+              if (chunk && typeof chunk.text === 'string') finalText += chunk.text
               yield chunk
             }
           } catch (error) {
