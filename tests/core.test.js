@@ -33,6 +33,9 @@ import {
   renderDiffHeatmap,
   quantizeColors,
   boxToSvg,
+  floodFillBackground,
+  bitmapOfGray,
+  posterizeSvg,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -543,4 +546,44 @@ test('boxToSvg draws a rect with pixel coordinates', () => {
   const svg = boxToSvg({ x1: 5, y1: 6, x2: 15, y2: 26 }, 100, 100).toString()
   assert.ok(svg.includes('x="5" y="6"'))
   assert.ok(svg.includes('width="10" height="20"'))
+})
+
+test('floodFillBackground clears border-connected background pixels', () => {
+  // 4x4: white background, black 2x2 square in the middle
+  const raw = Buffer.alloc(4 * 4 * 4)
+  for (let i = 0; i < 16; i++) {
+    raw[i * 4] = 255
+    raw[i * 4 + 1] = 255
+    raw[i * 4 + 2] = 255
+    raw[i * 4 + 3] = 255
+  }
+  for (const [x, y] of [[1, 1], [2, 1], [1, 2], [2, 2]]) {
+    const o = (y * 4 + x) * 4
+    raw[o] = 0
+    raw[o + 1] = 0
+    raw[o + 2] = 0
+  }
+  const out = floodFillBackground(raw, 4, 4, 40)
+  assert.equal(out[3], 0) // corner cleared
+  const center = (1 * 4 + 1) * 4
+  assert.equal(out[center + 3], 255) // foreground kept opaque
+})
+
+test('bitmapOfGray marks dark pixels as foreground', () => {
+  const raw = Buffer.alloc(2 * 2 * 3, 255)
+  raw[3] = 0; raw[4] = 0; raw[5] = 0
+  const bitmap = bitmapOfGray(raw, 2, 2)
+  assert.deepEqual([...bitmap], [0, 1, 0, 0])
+})
+
+test('posterizeSvg vectorizes a tiny PNG into SVG', async () => {
+  const png = await sharp({
+    create: { width: 8, height: 8, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } },
+  })
+    .composite([{ input: Buffer.from('<svg width="8" height="8"><rect x="2" y="2" width="4" height="4" fill="black"/></svg>') }])
+    .png()
+    .toBuffer()
+  const svg = await posterizeSvg(png, 2)
+  assert.ok(svg.includes('<svg'))
+  assert.ok(svg.length > 100)
 })
