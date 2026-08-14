@@ -1,18 +1,24 @@
-# dsh-vision-router
+<p align="center">
+  <img src="assets/hero.svg" width="100%" alt="DSH Vision Router — eyes for text-only DeepSeek Harness agents" />
+</p>
 
-**Eyes for text-only agents on DeepSeek Harness — free out of the box, no Python, one command to install.**
+<h1 align="center">dsh-vision-router</h1>
 
-Send an image and it just works: the agent looks at it through a built-in **free vision chain** (no signup, no key) and a set of pixel-level tools, while DeepSeek stays the brain for every turn. Image turns behave like ordinary tool-calling text turns, so the agent can look, crop, diff, OCR and iterate continuously — instead of receiving one lossy description.
+<p align="center"><strong>Eyes for text-only agents on DeepSeek Harness — free out of the box, no Python, one command to install.</strong></p>
 
-[![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
-[![Release v0.2.0](https://img.shields.io/badge/release-v0.2.0-5B4CF0?style=flat-square)](https://github.com/ysr666/dsh-vision-router/releases/tag/v0.2.0)
-[![Verified: 61 tests](https://img.shields.io/badge/verified-61%20tests-2EA44F?style=flat-square)](tests)
-[![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-0B7285?style=flat-square)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json)
-[![No Python](https://img.shields.io/badge/runtime-no%20Python-8A2BE2?style=flat-square)]()
-[![DSH profiles](https://img.shields.io/badge/DSH-Web%20profile-5B4CF0?style=flat-square)](cordis.patch.yml)
+<p align="center">Send an image and it just works: DeepSeek stays the brain while the built-in vision chain and pixel-level tools provide the eyes.</p>
 
-English | [中文](README.zh.md)
+<p align="center">
+  <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="awesome · DSH plugin" /></a>
+  <a href="https://github.com/ysr666/dsh-vision-router/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-5B4CF0?style=flat-square" alt="Release v0.2.0" /></a>
+  <a href="tests"><img src="https://img.shields.io/badge/verified-61%20tests-2EA44F?style=flat-square" alt="Verified: 61 tests" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-LGPL--3.0-0B7285?style=flat-square" alt="License: LGPL-3.0" /></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-%3E%3D22-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js >=22" /></a>
+  <img src="https://img.shields.io/badge/runtime-no%20Python-8A2BE2?style=flat-square" alt="No Python" />
+  <a href="cordis.patch.yml"><img src="https://img.shields.io/badge/DSH-Web%20profile-5B4CF0?style=flat-square" alt="DSH Web profile" /></a>
+</p>
+
+<p align="center">English · <a href="README.zh.md">中文</a></p>
 
 ## Why this exists
 
@@ -59,22 +65,19 @@ Then just paste an image into a conversation. The agent mounts the vision tools 
 
 ## How it works
 
-```mermaid
-flowchart TD
-    U[User sends an image] --> PS{agent/pre-step<br/>auto-mount deep tools}
-    PS --> WRAP[wrapper / stealth route<br/>deepseek-official declares image input]
-    WRAP --> MARK[model input rewrites image blocks<br/>cached description or a compact<br/>tool-hint marker — the UI still shows the image]
-    MARK --> DS[DeepSeek full agent turn<br/>reasoning / tools / answer]
-    DS --> TOOL[agent calls vision_describe and friends<br/>vision chain walks providers<br/>free endpoint, fallbacks, 429 backoff]
-    TOOL --> ART[artifacts in workspace<br/>.dsh-vision-router/artifacts]
-    TOOL --> DS
-```
+<p align="center">
+  <img src="assets/how-it-works.svg" width="100%" alt="How DSH Vision Router keeps DeepSeek as the brain and vision tools as the eyes." />
+</p>
 
 The vision model is **only the eyes**; DeepSeek is **always the brain**. An image turn is never hijacked by a one-shot vision answer — the agent drives the tools itself and can keep operating on the image across as many steps as the task needs.
 
 ## Tools
 
 All nine deep tools mount automatically on image turns (`autoActivateOnImage`); text turns can mount them via `vision_activate` or the `/vision-tools` skill. Built on sharp / potrace / tesseract / system Chrome — no Python:
+
+<p align="center">
+  <img src="assets/vision-tools.svg" width="100%" alt="Nine vision tools available in DSH Vision Router." />
+</p>
 
 | Tool | What it does | Artifact |
 |---|---|---|
