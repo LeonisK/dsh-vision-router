@@ -1257,7 +1257,6 @@ export function apply(ctx, config = {}) {
           name: entry.name,
           inputModalities: ['text', 'image'],
           context: { contextWindow: 32768 },
-          reasoning: { efforts: ['off'] },
         }
       },
       async *stream(options) {

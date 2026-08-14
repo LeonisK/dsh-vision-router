@@ -838,6 +838,8 @@ test('vision-http resolveModel returns exact id metadata (llm service contract)'
   assert.equal(resolved.id, 'ovh/Qwen2.5-VL-72B-Instruct')
   assert.equal(typeof resolved.name, 'string')
   assert.ok(resolved.name.length > 0)
+  // the llm service would reject string reasoning efforts (INVALID_MODEL_REASONING)
+  assert.equal(resolved.reasoning, undefined)
   await assert.rejects(
     () => http.resolveModel('vision-http', 'nope/missing'),
     /unknown model/,
