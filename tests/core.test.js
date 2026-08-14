@@ -1107,7 +1107,10 @@ function mockHarnessCtx({ stockRoute = false, config0 = {}, skills = false } = {
           adapters.set(provider, adapter)
           registrations.set(provider, { adapter, retryPolicy: adapter.providerRetryPolicy(provider) })
         }
-        return { replace: () => {} }
+        // mirror the real handle: callable disposer with a replace() sidecar
+        const handle = () => {}
+        handle.replace = () => {}
+        return handle
       },
       registration(provider) {
         const hit = registrations.get(provider)
@@ -1161,10 +1164,53 @@ test('apply skips the chain route by default: image turns go through the vision 
   // vision-http backend for vision_describe stays mounted
   assert.equal(adapters.has('vision-chain'), false)
   assert.ok(adapters.has('vision-http'))
-  // stealth is opt-in now: no hidden native route by default, but the
-  // visible deepseek-vision wrapper is always registered for admission
-  assert.equal(adapters.has('deepseek-official-native'), false)
+  // keep-alive: the stock route is dead in this mock (no stockRoute), so the
+  // plugin still takes over deepseek-official via the hidden native route —
+  // otherwise the DeepSeek models would vanish entirely
+  assert.ok(adapters.has('deepseek-official-native'))
   assert.ok(adapters.has('deepseek-vision'))
+})
+
+test('stealth defaults to false (issue #34: explicit opt-in, no stealth takeover by default)', () => {
+  assert.equal(Config({}).stealth, false)
+  assert.equal(Config({ stealth: undefined }).stealth, false)
+})
+
+test('wrappedProviders pre-fills the stock deepseek-official row out of the box', () => {
+  // like the vision chain pre-fills vision-http, the wrappers section ships
+  // one visible default row so users see the built-in wrapper at first glance
+  assert.deepEqual(Config({}).wrappedProviders, [{ provider: 'deepseek-official', models: [] }])
+})
+
+test('the vision chain ships with the built-in free model as its first row', () => {
+  assert.deepEqual(Config({}).providers, [
+    { provider: 'vision-http', model: 'ovh/Qwen2.5-VL-72B-Instruct', fallbacks: [] },
+  ])
+})
+
+test('keep-alive fallback: stealth off + dead stock route still serves deepseek-official', async () => {
+  // No stockRoute in the mock = the official llm-deepseek row is disabled at
+  // the composition layer (adapterAvailable throws). With stealth off the
+  // plugin must STILL take over, or the DeepSeek models vanish entirely.
+  const { ctx, adapters } = mockHarnessCtx()
+  apply(ctx, Config({ stealth: false }))
+  assert.ok(adapters.has('deepseek-official'), 'expected the keep-alive deepseek-official route')
+  assert.ok(adapters.has('deepseek-official-native'), 'expected the hidden native route')
+  const official = adapters.get('deepseek-official')
+  const listed = await official.listModels('deepseek-official')
+  assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
+})
+
+test('stealth off + alive stock route performs no takeover at all', async () => {
+  const { ctx, adapters } = mockHarnessCtx({ stockRoute: true })
+  apply(ctx, Config({ stealth: false }))
+  // the stock adapter keeps owning deepseek-official; the plugin registers no
+  // hidden native route and no public takeover — only the visible wrapper
+  assert.equal(adapters.has('deepseek-official-native'), false)
+  const stock = adapters.get('deepseek-official')
+  const listed = await stock.listModels('deepseek-official')
+  assert.deepEqual(listed[0].inputModalities, ['text'])
+  assert.ok(adapters.has('deepseek-vision'), 'expected the visible wrapper route')
 })
 
 // ── legacy routing fallback (routing: true, chainRoute: '') ────────────────
@@ -1299,6 +1345,116 @@ test('apply registers the vision-tools skill with source and content', () => {
   assert.ok(skill.content.includes('vision_describe') || skill.content.includes('vision_ground'))
 })
 
+test('apply registers an image-capable twin route for wrappedProviders', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  // register a third-party text-only provider in the mock before apply
+  const thirdParty = {
+    providerInfo: (p) => ({ id: p, name: 'Opencode' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', inputModalities: ['text'] },
+    ],
+    resolveModel: async (p, m) => ({
+      provider: p, id: m, name: m, inputModalities: ['text'], context: { contextWindow: 100000 },
+    }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['opencode-go'], thirdParty)
+  apply(ctx, Config({
+    wrappedProviders: [{ provider: 'opencode-go', models: ['deepseek-v4-flash'] }],
+  }))
+  const twin = adapters.get('opencode-go-vision')
+  assert.ok(twin, 'expected the opencode-go-vision twin route')
+  const listed = await twin.listModels('opencode-go-vision')
+  assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash'])
+  assert.deepEqual(listed[0].inputModalities, ['text', 'image'])
+  const resolved = await twin.resolveModel('opencode-go-vision', 'deepseek-v4-flash')
+  assert.deepEqual(resolved.inputModalities, ['text', 'image'])
+  // text turns delegate to the original provider with image-free messages
+  let delegateCall
+  ctx.llm.stream = async function* (options) {
+    delegateCall = options
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  const messages = [
+    { role: 'user', content: [{ type: 'image', attachment: { attachmentId: 'img-1', name: 'a.png' } }, { type: 'text', text: '看这张图' }] },
+  ]
+  for await (const _c of twin.stream({ provider: 'opencode-go-vision', model: 'deepseek-v4-flash', messages })) {
+    /* drain */
+  }
+  assert.equal(delegateCall.provider, 'opencode-go')
+  assert.equal(delegateCall.messages[0].content.filter((b) => b.type === 'image').length, 0)
+  assert.ok(delegateCall.messages[0].content[0].text.includes('img-1'))
+})
+
+test('twin route registers before its source adapter appears (live provider registration)', async () => {
+  // llm-pi-ai mounts dormant: its routes (openrouter/deepseek) register LIVE
+  // once the settings document loads, i.e. AFTER other plugins' apply().
+  // wrappedProviders must therefore register the twin up front and resolve
+  // the source adapter lazily per call.
+  const { ctx, adapters } = mockHarnessCtx()
+  apply(ctx, Config({
+    wrappedProviders: [{ provider: 'opencode-go', models: [] }],
+  }))
+  assert.ok(adapters.has('opencode-go-vision'), 'expected the twin route before the source adapter exists')
+  const twin = adapters.get('opencode-go-vision')
+  // before the source appears: empty catalog, no crash
+  assert.deepEqual(await twin.listModels('opencode-go-vision'), [])
+  const thirdParty = {
+    providerInfo: (p) => ({ id: p, name: 'Opencode' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', inputModalities: ['text'] },
+      { provider: p, id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', inputModalities: ['text'] },
+    ],
+    resolveModel: async (p, m) => ({
+      provider: p, id: m, name: m, inputModalities: ['text'], context: { contextWindow: 100000 },
+    }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['opencode-go'], thirdParty)
+  // after the source appears: mirrored catalog with image input declared
+  const listed = await twin.listModels('opencode-go-vision')
+  assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
+  for (const model of listed) assert.deepEqual(model.inputModalities, ['text', 'image'])
+  const resolved = await twin.resolveModel('opencode-go-vision', 'deepseek-v4-flash')
+  assert.deepEqual(resolved.inputModalities, ['text', 'image'])
+})
+
+test('twin sync is idempotent across llm/adapters-updated events', async () => {
+  const { ctx, adapters, captured } = mockHarnessCtx()
+  apply(ctx, Config({ wrappedProviders: [{ provider: 'opencode-go', models: [] }] }))
+  const fire = captured.on.get('llm/adapters-updated')
+  assert.ok(fire, 'expected the adapters-updated listener to be registered')
+  const thirdParty = {
+    providerInfo: (p) => ({ id: p, name: 'Opencode' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', inputModalities: ['text'] },
+      { provider: p, id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', inputModalities: ['text'] },
+    ],
+    resolveModel: async (p, m) => ({
+      provider: p, id: m, name: m, inputModalities: ['text'], context: { contextWindow: 100000 },
+    }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['opencode-go'], thirdParty)
+  // every adapter change re-runs the sync; repeated runs must neither
+  // duplicate the route nor throw DUPLICATE_ADAPTER
+  fire()
+  fire()
+  fire()
+  assert.ok(adapters.has('opencode-go-vision'))
+  const listed = await adapters.get('opencode-go-vision').listModels('opencode-go-vision')
+  assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
+})
+
 test('apply falls back to the visible wrapper when the stock route is still active', async () => {
   const { ctx, adapters } = mockHarnessCtx({ stockRoute: true })
   apply(ctx, Config({
@@ -1311,11 +1467,37 @@ test('apply falls back to the visible wrapper when the stock route is still acti
   assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
   assert.deepEqual(listed[0].inputModalities, ['text'])
 
-  // the wrapper route is visible and mirrors the stock models with image input
+  // the wrapper route mirrors the stock models; in the default tools-first
+  // mode (routing off) the vision-chain pairs stay out of this group — they
+  // are legacy whole-turn routing markers, not DeepSeek entries
   const wrapper = adapters.get('deepseek-vision')
   const wrapped = await wrapper.listModels('deepseek-vision')
   assert.deepEqual(wrapped.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
   assert.deepEqual(wrapped[0].inputModalities, ['text', 'image'])
+})
+
+test('wrapper lists the vision-chain pairs only when whole-turn routing is on', async () => {
+  const { ctx, adapters } = mockHarnessCtx({ stockRoute: true, config0: { routing: true } })
+  apply(ctx, Config({
+    provider: 'openrouter',
+    providers: [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }],
+    routing: true,
+  }))
+  const wrapper = adapters.get('deepseek-vision')
+  const wrapped = await wrapper.listModels('deepseek-vision')
+  assert.deepEqual(wrapped.map((m) => m.id), [
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
+    'vision-http/ovh/Qwen2.5-VL-72B-Instruct',
+  ])
+  const visionEntry = wrapped.find((m) => m.id === 'vision-http/ovh/Qwen2.5-VL-72B-Instruct')
+  assert.ok(visionEntry)
+  assert.deepEqual(visionEntry.inputModalities, ['text', 'image'])
+  assert.ok(String(visionEntry.name).includes('视觉'))
+  // resolving a vision-pair entry still returns image-capable metadata
+  const resolved = await wrapper.resolveModel('deepseek-vision', 'vision-http/ovh/Qwen2.5-VL-72B-Instruct')
+  assert.deepEqual(resolved.inputModalities, ['text', 'image'])
+  assert.equal(resolved.id, 'vision-http/ovh/Qwen2.5-VL-72B-Instruct')
 })
 test('floodFillBackground clears border-connected background pixels', () => {
   // 4x4: white background, black 2x2 square in the middle
