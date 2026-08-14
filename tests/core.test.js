@@ -22,6 +22,8 @@ import {
   reverseRouteTarget,
   stripImageBlocks,
   switchRoute,
+  estimateTokens,
+  trimMessagesToBudget,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -397,4 +399,30 @@ test('stripImageBlocks removes image blocks and leaves the rest', () => {
   assert.equal(out[0].content[0].type, 'text')
   assert.equal(out[1], messages[1])
   assert.deepEqual(stripImageBlocks(undefined), [])
+})
+
+test('estimateTokens and trimMessagesToBudget fit long conversations', () => {
+  const big = (n) => ({
+    role: 'user',
+    content: [{ type: 'text', text: 'x'.repeat(n) }],
+  })
+  const messages = [
+    { role: 'system', content: [{ type: 'text', text: 'sys' }] },
+    big(3000),
+    big(3000),
+    big(3000),
+    big(3000),
+    { role: 'user', content: [{ type: 'text', text: 'last question' }, { type: 'image', attachment: { attachmentId: 'a' } }] },
+  ]
+  const trimmed = trimMessagesToBudget(messages, 5000)
+  assert.equal(trimmed[0].role, 'system')
+  assert.equal(trimmed[trimmed.length - 1].content[0].text, 'last question')
+  const used = trimmed.reduce((sum, m) => sum + estimateTokens(m), 0)
+  assert.ok(used <= 5000, `used ${used} > budget`)
+  assert.ok(trimmed.length < messages.length)
+})
+
+test('estimateTokens counts image blocks at a fixed cost', () => {
+  const withImage = estimateTokens({ content: [{ type: 'image', attachment: {} }] })
+  assert.ok(withImage >= 1445)
 })

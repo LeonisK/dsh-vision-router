@@ -268,6 +268,47 @@ export function stripImageBlocks(messages) {
   })
 }
 
+/** Rough token estimate for one message (no tokenizer; conservative on purpose). */
+export function estimateTokens(message) {
+  let chars = 0
+  let images = 0
+  const walk = (block) => {
+    if (!block) return
+    if (typeof block.text === 'string') chars += block.text.length
+    if (typeof block.arguments === 'string') chars += block.arguments.length
+    if (typeof block.name === 'string') chars += block.name.length
+    if (block.type === 'image') images += 1
+    if (Array.isArray(block.content)) block.content.forEach(walk)
+  }
+  if (message && Array.isArray(message.content)) message.content.forEach(walk)
+  return Math.ceil(chars / 3) + images * 1445
+}
+
+/**
+ * Truncate a conversation to fit a token budget: keep every system message,
+ * always keep the last (current) message, then fill backwards from the end.
+ * Used to fit a long session into a vision model's smaller context window.
+ */
+export function trimMessagesToBudget(messages, budgetTokens) {
+  const list = messages ?? []
+  if (list.length === 0) return list
+  const system = list.filter((message) => message && message.role === 'system')
+  const rest = list.filter((message) => !message || message.role !== 'system')
+  if (rest.length === 0) return system
+  const last = rest[rest.length - 1]
+  const kept = [last]
+  let used = estimateTokens(last)
+  for (let i = rest.length - 2; i >= 0; i--) {
+    const message = rest[i]
+    const cost = estimateTokens(message)
+    if (used + cost > budgetTokens) break
+    kept.push(message)
+    used += cost
+  }
+  kept.reverse()
+  return [...system, ...kept]
+}
+
 /**
  * Reverse routing: the session's ENTRY model must declare image input or the
  * harness prompt admission rejects image messages before any plugin runs.
@@ -631,7 +672,32 @@ export function apply(ctx, config = {}) {
       },
       async *stream(options) {
         const failures = []
+        // Fit the conversation into the target model's context window: a long
+        // session easily exceeds the 200-260k windows of typical vision models.
+        let defaultBudget = 256000
+        try {
+          const base = await ctx.llm.resolveModelInfo(pairs[0].provider, pairs[0].model)
+          if (base.context && base.context.contextWindow > 0) {
+            defaultBudget = base.context.contextWindow
+          }
+        } catch {
+          /* keep default */
+        }
         for (const pair of pairs) {
+          let budget = defaultBudget
+          try {
+            const info = await ctx.llm.resolveModelInfo(pair.provider, pair.model)
+            if (info.context && info.context.contextWindow > 0) {
+              budget = info.context.contextWindow
+            }
+          } catch {
+            /* keep default */
+          }
+          const reserve = 8192
+          const messages =
+            estimateTokens(options.messages) > budget - reserve
+              ? trimMessagesToBudget(options.messages, Math.max(budget - reserve, 16384))
+              : options.messages
           let succeeded = false
           let failed = false
           let failMessage = 'unknown error'
@@ -641,6 +707,7 @@ export function apply(ctx, config = {}) {
               provider: pair.provider,
               model: pair.model,
               reasoningEffort: undefined,
+              messages,
             })) {
               if (chunk && chunk.type === 'finish') {
                 const kind = chunk.reason && chunk.reason.kind
