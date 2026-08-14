@@ -200,6 +200,33 @@ dsh plugin --profile web add github:ysr666/dsh-vision-router
 | `proxyHosts` | `api.openrouter.ai`、`openrouter.ai` | 仅这些域名走 `proxy`。 |
 | `httpProviders` | 内置 OVHcloud 匿名端点 | 直连 HTTP 供应商列表（不走 harness llm 服务）；留空 = 用内置免费模型，见下文。 |
 | `freeFallback` | `true` | 未显式配置 `httpProviders` 时启用内置免 Key 免费兜底；`false` 彻底关闭。 |
+| `stealth` | `true` | 尝试接管 `deepseek-official` 路由（"隐身模式"，需配合禁用官方 `llm-deepseek` 行，见下）。`false` 直接关闭。 |
+
+## 隐身模式（stealth）
+
+**默认安装（什么都不改）完全安全。** 官方 `llm-deepseek` 行在场时，接管注册必然抛出
+`DUPLICATE_ADAPTER`，插件捕获后自动回退为上文"DeepSeek + 自动识图"包装路由的可见行为，
+文本轮次与安装本插件之前逐字节相同。stealth 只有在用户**主动禁用官方行**时才生效。
+
+若想要"模型选择器看起来和原来一模一样"（官方 `DeepSeek` 组、同样的模型名，只是条目背后
+变成自动识图包装），在你的 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）加入：
+
+```yaml
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  disabled: true
+```
+
+效果：
+
+- `deepseek-official` 路由改由本插件提供：目录与原版完全一致（`deepseek-v4-flash` /
+  `deepseek-v4-pro`，名称不变），但声明 `inputModalities: [text, image]`，图片消息通过准入；
+- 文字轮次由插件重建的原生 DeepSeek 适配器（读取同一个 `llm-deepseek` 设置段与凭据）承接；
+- `deepseek-vision` 路由保留注册但不出现在选择器里，老会话无缝兼容。
+
+风险与恢复：禁用官方行后，如果本插件行启动失败（例如依赖未装上），选择器里将没有
+DeepSeek。**删除补丁层里上面 3 行即可立即恢复官方路由。** 插件本身永远不会替你禁用
+官方行，也不会在官方行在场时覆盖它。
 
 ### 内置免费模型（免注册、免 Key）
 

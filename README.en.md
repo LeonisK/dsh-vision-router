@@ -263,6 +263,34 @@ config:
 Useful when the provider region-blocks your IP or your exit node is ToS-flagged.
 Only the listed hosts are proxied; DeepSeek stays on the direct connection.
 
+### Stealth mode
+
+**A default install (with no other changes) is completely safe.** While the stock
+`llm-deepseek` row is active, the takeover registration throws `DUPLICATE_ADAPTER`
+and the plugin falls back to the visible "DeepSeek + vision" wrapper described
+above — text turns behave byte-for-byte as before the plugin was installed.
+Stealth only engages when you **explicitly disable the stock row** in your
+profile patch layer (`~/.dsh/profiles/<profile>/cordis.patch.yml`):
+
+```yaml
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  disabled: true
+```
+
+With that row disabled, the plugin serves `deepseek-official` itself: the model
+picker looks exactly like the stock one (same group name, same model ids and
+names) but the entries declare `inputModalities: [text, image]`, so image
+messages pass admission. Text turns run on a rebuilt native DeepSeek adapter
+that reads the same `llm-deepseek` settings section and credential store. The
+`deepseek-vision` route stays registered but hidden, keeping old sessions
+working.
+
+Risk and recovery: once the stock row is disabled, a failed plugin boot leaves
+no DeepSeek in the picker. **Delete the three lines above to restore the stock
+route immediately.** The plugin never disables the stock row for you, and never
+overrides it while it is present.
+
 ## Comparison
 
 | | Manual model switching | MCP vision bridge | dsh-vision-router |
