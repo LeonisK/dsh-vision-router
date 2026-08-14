@@ -874,6 +874,40 @@ test('vision-http resolveModel returns exact id metadata (llm service contract)'
   )
 })
 
+test('vision-http stream emits the indexed block protocol the assemblers need', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  apply(ctx, Config({}))
+  const http = adapters.get('vision-http')
+  assert.ok(http)
+  const original = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: 'hi' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  try {
+    const chunks = []
+    for await (const chunk of http.stream({
+      provider: 'vision-http',
+      model: 'ovh/Qwen2.5-VL-72B-Instruct',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+    })) chunks.push(chunk)
+    const kinds = chunks.map((c) => c.type)
+    assert.ok(kinds.includes('block-start'))
+    const delta = chunks.find((c) => c.type === 'text-delta')
+    assert.equal(delta.index, 0)
+    assert.equal(delta.text, 'hi')
+    const finish = chunks.find((c) => c.type === 'finish')
+    assert.equal(finish.reason.kind, 'stop')
+    // the tool's chunk assembler must recover the full text
+    const assembler = createChunkAssembler()
+    for (const chunk of chunks) assembler.push(chunk)
+    assert.equal(assembler.finish(), 'hi')
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test('apply falls back to the visible wrapper when the stock route is still active', async () => {
   const { ctx, adapters } = mockHarnessCtx({ stockRoute: true })
   apply(ctx, Config({

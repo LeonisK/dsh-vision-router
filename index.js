@@ -1349,7 +1349,15 @@ export function apply(ctx, config = {}) {
           }
           return
         }
-        if (text !== '') yield { type: 'text-delta', text }
+        if (text !== '') {
+          // Emit the full harness chunk protocol: block-start/text-delta/
+          // block-end carry a block index, and assemblers (the vision_describe
+          // tool's included) accumulate text per index — a bare text-delta
+          // without an index is silently dropped, surfacing as empty content.
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+        }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
     }
