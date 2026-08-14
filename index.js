@@ -1563,8 +1563,17 @@ export function apply(ctx, config = {}) {
         const outcome = activateDeepTools()
         if (!autoMountNotified && outcome.includes('已挂载')) {
           autoMountNotified = true
+          // The harness persists pre-step-injected boundary messages as durable
+          // user/message events; session validation requires an `id`, so the
+          // reminder must carry one (a missing id corrupts the session log —
+          // "lacks an identified message").
           const reminder = {
             role: 'user',
+            id: `vision-router-auto-mount-${
+              typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `${Date.now()}-${Math.floor(Math.random() * 1e9)}`
+            }`,
             content: [
               {
                 type: 'text',
