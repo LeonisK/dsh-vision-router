@@ -33,3 +33,11 @@ jobs:
           update-readme: 'false'
           commit: 'true'
           commit-message: 'chore: update star history [skip ci]'
+
+  cleanup-temp-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete temporary README branch
+        shell: bash
+        run: git push origin --delete docs/star-history-readme || true
