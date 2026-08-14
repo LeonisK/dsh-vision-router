@@ -25,6 +25,9 @@ import {
   collectImageBlocks,
   lastUserText,
   switchRoute,
+  launchEnvironmentLike,
+  createNativeDeepSeekAdapter,
+  createStealthAdapter,
   estimateTokens,
   estimateMessages,
   trimMessagesToBudget,
@@ -33,6 +36,8 @@ import {
   renderDiffHeatmap,
   quantizeColors,
   boxToSvg,
+  apply,
+  Config,
 } from '../index.js'
 
 test('mediaTypeOf maps extensions', () => {
@@ -543,4 +548,237 @@ test('boxToSvg draws a rect with pixel coordinates', () => {
   const svg = boxToSvg({ x1: 5, y1: 6, x2: 15, y2: 26 }, 100, 100).toString()
   assert.ok(svg.includes('x="5" y="6"'))
   assert.ok(svg.includes('width="10" height="20"'))
+})
+
+test('launchEnvironmentLike exposes get(name) -> { value }', () => {
+  const env = launchEnvironmentLike({ DEEPSEEK_API_KEY: 'sk-x', EMPTY: '' })
+  assert.equal(env.get('DEEPSEEK_API_KEY').value, 'sk-x')
+  assert.deepEqual(env.get('EMPTY'), { value: '' })
+  assert.equal(env.get('MISSING'), undefined)
+})
+
+test('createNativeDeepSeekAdapter builds the stock adapter from settings + credentials', async () => {
+  const ctx = {
+    get(name) {
+      if (name === 'settings') return { get: () => ({}) }
+      if (name === 'credentials') return { resolve: async () => ({ value: 'sk-test' }) }
+      return undefined
+    },
+  }
+  const adapter = createNativeDeepSeekAdapter(ctx)
+  assert.equal(adapter.providerInfo('deepseek-official-native').name, 'DeepSeek')
+  const models = await adapter.listModels('deepseek-official-native')
+  assert.ok(models.some((m) => m.id === 'deepseek-v4-pro'))
+  assert.deepEqual(models[0].inputModalities, ['text'])
+  const info = await adapter.resolveModel('deepseek-official-native', 'deepseek-v4-pro')
+  assert.deepEqual(info.inputModalities, ['text'])
+  assert.ok(info.context.contextWindow > 0)
+  const key = await ctx._keyTest?.()
+  assert.equal(key, undefined)
+})
+
+test('createStealthAdapter mirrors the stock catalog but declares image input', async () => {
+  const native = {
+    providerInfo: (p) => ({ id: p, name: 'DeepSeek' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+    ],
+    resolveModel: async (p, m) => ({ provider: p, id: m, name: 'DeepSeek-V4-Pro' }),
+  }
+  const ctx = {
+    logger: { warn() {} },
+    llm: {
+      async *stream() {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    },
+  }
+  const imageMemory = new Map()
+  const adapter = createStealthAdapter(ctx, {
+    native,
+    imageMemory,
+    pairs: () => [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }],
+    chainRoute: () => 'vision-chain',
+    delegateProvider: 'deepseek-official-native',
+  })
+  assert.equal(adapter.providerInfo('deepseek-official').name, 'DeepSeek')
+  assert.equal(adapter.providerRetryPolicy('deepseek-official'), 'retry')
+  const listed = await adapter.listModels('deepseek-official')
+  assert.equal(listed[0].id, 'deepseek-v4-pro')
+  assert.deepEqual(listed[0].inputModalities, ['text', 'image'])
+  assert.deepEqual(await adapter.listModels('deepseek-vision'), [])
+  const info = await adapter.resolveModel('deepseek-official', 'deepseek-v4-pro')
+  assert.deepEqual(info.inputModalities, ['text', 'image'])
+})
+
+test('stealth stream delegates text turns to the native route with memory substitution', async () => {
+  let delegateCall
+  const ctx = {
+    logger: { warn() {} },
+    llm: {
+      async *stream(options) {
+        delegateCall = options
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    },
+  }
+  const imageMemory = new Map([['img-1', '一只猫']])
+  const adapter = createStealthAdapter(ctx, {
+    native: {
+      providerInfo: () => ({ id: 'x', name: 'DeepSeek' }),
+      providerRetryPolicy: () => undefined,
+      listModels: async () => [],
+      resolveModel: async (p, m) => ({ provider: p, id: m, name: m }),
+    },
+    imageMemory,
+    pairs: () => [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }],
+    chainRoute: () => 'vision-chain',
+    delegateProvider: 'deepseek-official-native',
+  })
+  const messages = [
+    {
+      role: 'user',
+      content: [{ type: 'image', attachment: { attachmentId: 'img-1', name: 'a.png' } }, { type: 'text', text: '这张图是什么' }],
+    },
+  ]
+  const chunks = []
+  for await (const chunk of adapter.stream({ provider: 'deepseek-official', model: 'deepseek-v4-pro', messages })) {
+    chunks.push(chunk)
+  }
+  assert.equal(delegateCall.provider, 'deepseek-official-native')
+  assert.equal(delegateCall.model, 'deepseek-v4-pro')
+  assert.ok(delegateCall.messages[0].content[0].text.includes('一只猫'))
+  assert.equal(delegateCall.messages[0].content.filter((b) => b.type === 'image').length, 0)
+  assert.equal(chunks[0].type, 'finish')
+})
+
+// ── apply() end-to-end: the harness-shaped mock ────────────────────────────
+//
+// Regression guard: apply() once crashed with "Cannot access 'chainRoute'
+// before initialization" because the stealth/wrapper blocks referenced the
+// `chainRoute` const before its declaration (the TDZ bug that shipped a dead
+// plugin). These tests apply the full plugin against a harness-shaped mock
+// ctx, so ordering bugs inside apply() fail loudly here instead of at boot.
+
+function mockHarnessCtx({ stockRoute = false, config0 = {} } = {}) {
+  const adapters = new Map() // provider -> adapter
+  const registrations = new Map() // provider -> { adapter, retryPolicy }
+  if (stockRoute) {
+    const stock = {
+      providerInfo: (p) => ({ id: p, name: 'DeepSeek' }),
+      providerRetryPolicy: () => 'retry',
+      listModels: async (p) => [
+        { provider: p, id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', inputModalities: ['text'] },
+        { provider: p, id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', inputModalities: ['text'] },
+      ],
+      resolveModel: async (p, m) => ({
+        provider: p, id: m, name: m, inputModalities: ['text'], context: { contextWindow: 1000000 },
+      }),
+      stream: async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    }
+    adapters.set('deepseek-official', stock)
+    registrations.set('deepseek-official', { adapter: stock, retryPolicy: 'retry' })
+  }
+  const ctx = {
+    get(name) {
+      if (name === 'settings') return { get: () => undefined }
+      if (name === 'credentials') return { resolve: async () => ({ value: 'sk-test' }) }
+      return undefined
+    },
+    logger: { warn() {}, info() {}, error() {} },
+    effect(fn) {
+      if (typeof fn === 'function') fn()
+      return () => {}
+    },
+    on() {},
+    inject(_deps, callback) {
+      // settings seam: run synchronously against a mock settings service that
+      // resolves the composition entry through the Config schema defaults.
+      const scope = {
+        get: () => ({ ...Config({}), ...config0 }),
+        watch: () => {},
+      }
+      const sctx = {
+        settings: { register: () => scope },
+        effect: () => () => {},
+      }
+      callback(sctx)
+    },
+    tools: { register: () => () => {} },
+    llm: {
+      registerAdapter(providers, adapter) {
+        for (const provider of providers) {
+          if (adapters.has(provider)) {
+            const error = new Error(`an adapter for provider "${provider}" is already registered`)
+            error.code = 'DUPLICATE_ADAPTER'
+            throw error
+          }
+        }
+        for (const provider of providers) {
+          adapters.set(provider, adapter)
+          registrations.set(provider, { adapter, retryPolicy: adapter.providerRetryPolicy(provider) })
+        }
+        return { replace: () => {} }
+      },
+      registration(provider) {
+        const hit = registrations.get(provider)
+        if (hit === undefined) throw new Error(`no adapter registered for provider "${provider}"`)
+        return hit
+      },
+      registerConfigurableProviders: () => ({ replace: () => {} }),
+      stream: async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    },
+  }
+  return { ctx, adapters }
+}
+
+test('apply registers the stealth deepseek-official route with the stock catalog', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  // the harness loader normalizes the entry config through the Config schema
+  apply(ctx, Config({
+    provider: 'openrouter',
+    providers: [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }],
+  }))
+
+  // all four routes came up: hidden native, public deepseek-official, the
+  // hidden wrapper alias, and the vision chain
+  for (const provider of ['deepseek-official-native', 'deepseek-official', 'deepseek-vision', 'vision-chain']) {
+    assert.ok(adapters.has(provider), `expected route "${provider}" to be registered`)
+  }
+
+  // the public route serves the stock catalog (same ids/names) but declares
+  // image input, so the picker looks exactly like the stock one
+  const official = adapters.get('deepseek-official')
+  const listed = await official.listModels('deepseek-official')
+  assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
+  assert.deepEqual(listed.map((m) => m.name), ['DeepSeek-V4-Flash', 'DeepSeek-V4-Pro'])
+  for (const model of listed) assert.deepEqual(model.inputModalities, ['text', 'image'])
+
+  // the hidden routes advertise no models
+  assert.deepEqual(await adapters.get('deepseek-official-native').listModels('deepseek-official-native'), [])
+  assert.deepEqual(await adapters.get('deepseek-vision').listModels('deepseek-vision'), [])
+})
+
+test('apply falls back to the visible wrapper when the stock route is still active', async () => {
+  const { ctx, adapters } = mockHarnessCtx({ stockRoute: true })
+  apply(ctx, Config({
+    provider: 'openrouter',
+    providers: [{ provider: 'openrouter', model: 'qwen/qwen3-vl-235b-a22b-instruct' }],
+  }))
+
+  // the stock adapter still owns deepseek-official (stealth gave up cleanly)
+  const listed = await adapters.get('deepseek-official').listModels('deepseek-official')
+  assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
+  assert.deepEqual(listed[0].inputModalities, ['text'])
+
+  // the wrapper route is visible and mirrors the stock models with image input
+  const wrapper = adapters.get('deepseek-vision')
+  const wrapped = await wrapper.listModels('deepseek-vision')
+  assert.deepEqual(wrapped.map((m) => m.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
+  assert.deepEqual(wrapped[0].inputModalities, ['text', 'image'])
 })

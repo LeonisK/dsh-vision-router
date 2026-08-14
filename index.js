@@ -21,6 +21,8 @@ import z from '@deepseek-ai/schemastery'
 import sharp from 'sharp'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { DeepSeekAdapter, resolveAdapterOptions } from '@deepseek-ai/dsh-llm-deepseek'
+import { getOrCreateAnonymousUserId } from '@deepseek-ai/dsh-anonymous-user-id'
 
 export const name = 'vision-router'
 export const inject = ['tools', 'llm']
@@ -42,6 +44,7 @@ export const Config = z.object({
   reverseRouting: z.boolean().default(true),
   wrapperRoute: z.string().default('deepseek-vision'),
   chainRoute: z.string().default('vision-chain'),
+  stealth: z.boolean().default(true),
   textProvider: z
     .object({
       provider: z.string().default('deepseek-official'),
@@ -743,6 +746,176 @@ async function visionAnswer(llm, options) {
   return assembler.finish()
 }
 
+/** Environment shim for `resolveAdapterOptions`: `{ get: (name) => ({ value }) }`. */
+export function launchEnvironmentLike(env) {
+  const map = env ?? {}
+  return {
+    get(name) {
+      return Object.prototype.hasOwnProperty.call(map, name) ? { value: map[name] } : undefined
+    },
+  }
+}
+
+/**
+ * Rebuild the stock DeepSeek adapter from this plugin for the stealth
+ * takeover: the `llm-deepseek` settings section + the credential seam + the
+ * anonymous user id, exactly like the stock row does it.
+ */
+export function createNativeDeepSeekAdapter(ctx) {
+  const env = launchEnvironmentLike(
+    typeof process !== 'undefined' && process.env ? process.env : {},
+  )
+  const options = () => {
+    let raw
+    try {
+      const settings = ctx.get('settings')
+      raw = settings && settings.get ? settings.get('llm-deepseek') : undefined
+    } catch {
+      raw = undefined
+    }
+    return resolveAdapterOptions(raw ?? {}, env)
+  }
+  const resolveApiKey = async (connection) => {
+    const ref = connection.apiKeyEnv
+    const credentials = ctx.get('credentials')
+    if (credentials !== undefined) {
+      try {
+        const hit = await credentials.resolve(ref)
+        if (hit && typeof hit.value === 'string' && hit.value.length > 0) return hit.value
+      } catch {
+        /* fall through to the environment */
+      }
+    }
+    const ambient = env.get(ref)
+    if (ambient !== undefined && typeof ambient.value === 'string' && ambient.value.length > 0) {
+      return ambient.value
+    }
+    throw new Error(`vision-router: no API key for the native DeepSeek route (${ref})`)
+  }
+  let userId
+  const resolveUserId = () => {
+    if (userId === undefined) userId = getOrCreateAnonymousUserId()
+    return userId
+  }
+  return new DeepSeekAdapter({ options, resolveApiKey, resolveUserId })
+}
+
+/**
+ * Shared wrapper-stream body: describe pending images through the chain route
+ * ("eyes only"), cache the descriptions, then run the real turn on the
+ * delegated text provider with image blocks replaced by the cached text.
+ */
+export function createWrapperStreamBody(ctx, { imageMemory, pairs, chainRoute, delegateProvider }) {
+  return {
+    async *stream(options) {
+      const messages = options.messages ?? []
+      // The vision model is only the eyes: send it just the image plus the
+      // user's current question (intent-driven, like the vision-toolkit
+      // approach), cache the answer, and let the text provider run the whole
+      // agent turn on the substituted text. This keeps the vision cost at
+      // ~1.5k tokens per image instead of the full history.
+      const imageEntries = collectImageBlocks(messages)
+      const question = lastUserText(messages)
+      const currentIds = new Set()
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i]
+        if (!message || message.role !== 'user' || !Array.isArray(message.content)) continue
+        for (const block of message.content) {
+          if (!block || block.type !== 'image') continue
+          const attachment = block.attachment || {}
+          const id = attachment.attachmentId || attachment.id
+          if (id) currentIds.add(id)
+        }
+        break
+      }
+      // Always re-look at the images of the current turn (the question may
+      // differ from what a cached description answered); history images reuse
+      // the cached description.
+      const pending = imageEntries.filter(
+        (entry) => !imageMemory.has(entry.id) || currentIds.has(entry.id),
+      )
+      if (pending.length > 0 && chainRoute() !== undefined) {
+        const instruction = question
+          ? `用户的问题是：「${question.slice(0, 1500)}」。请仔细查看图片，直接回答这个问题，` +
+            '并在回答中给出图片里与该问题相关的完整细节（图中的文字请尽量原样转述）。' +
+            '这段回答将提供给一个无法直接查看图片的文本模型使用；只输出回答本身，不要寒暄。'
+          : '请详细描述这张图片的内容：画面元素、图中的文字（尽量原样转述）、风格与整体含义。' +
+            '这段描述将提供给一个无法直接查看图片的文本模型使用，只输出描述本身，不要寒暄。'
+        await Promise.all(
+          pending.map(async (entry) => {
+            let text = ''
+            try {
+              for await (const chunk of ctx.llm.stream({
+                provider: chainRoute(),
+                model: `${pairs()[0].provider}/${pairs()[0].model}`,
+                messages: [
+                  {
+                    role: 'user',
+                    content: [entry.block, { type: 'text', text: instruction }],
+                  },
+                ],
+                reasoningEffort: undefined,
+                signal: options.signal,
+              })) {
+                if (chunk && chunk.type === 'finish') {
+                  const kind = chunk.reason && chunk.reason.kind
+                  if (kind === 'error' || kind === 'aborted') break
+                }
+                if (chunk && typeof chunk.text === 'string') text += chunk.text
+              }
+            } catch (error) {
+              ctx.logger?.warn(
+                'vision-router: describe failed for %s: %s',
+                entry.name,
+                error && error.message ? error.message : String(error),
+              )
+            }
+            if (text.trim()) imageMemory.set(entry.id, text.trim())
+          }),
+        )
+      }
+      yield* ctx.llm.stream({
+        ...options,
+        provider: delegateProvider,
+        messages: replaceImageBlocksWithMemory(messages, imageMemory),
+      })
+    },
+  }
+}
+
+/**
+ * The stealth public adapter: serves the `deepseek-official` route with the
+ * stock catalog (identical model ids and names) but declares image input, so
+ * the model picker looks exactly like the stock one while image turns pass
+ * admission. Text turns delegate to `delegateProvider` (the hidden native
+ * route). Any other route name (e.g. the `deepseek-vision` alias) advertises
+ * no models, so it stays functional but invisible in the picker.
+ */
+export function createStealthAdapter(ctx, { native, imageMemory, pairs, chainRoute, delegateProvider }) {
+  return {
+    providerInfo(provider) {
+      return { id: provider, name: 'DeepSeek' }
+    },
+    providerRetryPolicy(provider) {
+      return native.providerRetryPolicy(provider)
+    },
+    async listModels(provider) {
+      if (provider !== 'deepseek-official') return []
+      const listed = await native.listModels(provider)
+      return listed.map((model) => ({
+        ...model,
+        provider,
+        inputModalities: ['text', 'image'],
+      }))
+    },
+    async resolveModel(provider, model, signal) {
+      const base = await native.resolveModel(provider, model, signal)
+      return { ...base, provider, inputModalities: ['text', 'image'] }
+    },
+    ...createWrapperStreamBody(ctx, { imageMemory, pairs, chainRoute, delegateProvider }),
+  }
+}
+
 export function apply(ctx, config = {}) {
   // Live configuration: composition entry at boot, then the resolved settings
   // section once the settings service mounts (installSettingsSection below).
@@ -757,6 +930,12 @@ export function apply(ctx, config = {}) {
   }
   const routingEnabled = () => current().routing !== false
   const reverseRoutingEnabled = () => routingEnabled() && current().reverseRouting !== false
+  // Declared up front: the stealth takeover and wrapper blocks below both
+  // reference it, and its `const` used to sit after those blocks (TDZ crash).
+  const chainRoute = () => {
+    const value = current().chainRoute
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
   const wrapperRoute = () => {
     const value = current().wrapperRoute
     return typeof value === 'string' && value !== '' ? value : undefined
@@ -796,6 +975,74 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // ── stealth takeover: serve `deepseek-official` ourselves ────────────────
+  //
+  // With the stock llm-deepseek row disabled in the profile composition, the
+  // native adapter is rebuilt from this plugin under a hidden internal route
+  // and the public `deepseek-official` route serves the stock catalog with
+  // image input declared: the picker looks exactly like the stock one, but
+  // image turns work. If the stock row is still active, taking over the route
+  // throws DUPLICATE_ADAPTER and we fall back to the visible wrapper below.
+  const stealthEnabled = current().stealth !== false
+  const nativeRoute = 'deepseek-official-native'
+  let stealthActive = false
+  let nativeAdapter
+  if (stealthEnabled) {
+    try {
+      nativeAdapter = createNativeDeepSeekAdapter(ctx)
+      const nativeHandle = ctx.llm.registerAdapter([nativeRoute], {
+        providerInfo(provider) {
+          return { id: provider, name: 'DeepSeek (native)' }
+        },
+        providerRetryPolicy(provider) {
+          return nativeAdapter.providerRetryPolicy(provider)
+        },
+        async listModels() {
+          return [] // hidden from the picker
+        },
+        async resolveModel(provider, model, signal) {
+          return nativeAdapter.resolveModel(provider, model, signal)
+        },
+        async *stream(options) {
+          yield* nativeAdapter.stream(options)
+        },
+      })
+      ctx.effect(() => nativeHandle, 'vision-router: hidden native deepseek route')
+      const publicHandle = ctx.llm.registerAdapter(
+        ['deepseek-official'],
+        createStealthAdapter(ctx, {
+          native: nativeAdapter,
+          imageMemory,
+          pairs,
+          chainRoute,
+          delegateProvider: nativeRoute,
+        }),
+      )
+      stealthActive = true
+      ctx.effect(() => publicHandle, 'vision-router: stealth deepseek-official route')
+      // Keep the Models page's DeepSeek editor wired to the same settings
+      // section the stock row used.
+      try {
+        ctx.llm.registerConfigurableProviders([
+          {
+            provider: 'deepseek-official',
+            displayName: 'DeepSeek',
+            settingsNs: 'llm-deepseek',
+            settingsPath: [],
+          },
+        ])
+      } catch {
+        /* the stock row may still own the directory entry */
+      }
+    } catch (error) {
+      stealthActive = false
+      ctx.logger?.warn(
+        'vision-router: stealth takeover skipped (%s); keeping the stock deepseek-official route and the visible wrapper',
+        error && error.message ? error.message : String(error),
+      )
+    }
+  }
+
   // ── wrapper route: admission + display shim ────────────────────────────────
   //
   // The harness prompt admission rejects image messages when the selected
@@ -807,9 +1054,10 @@ export function apply(ctx, config = {}) {
   if (wrapperRoute() !== undefined) {
     const WRAPPER_MODEL_IDS = ['deepseek-v4-pro', 'deepseek-v4-flash']
     const wrapName = (name) => `${name ?? 'DeepSeek'}（自动识图）`
+    const textProviderRoute = () => (stealthActive ? nativeRoute : textProvider().provider)
     const delegateAdapter = () => {
       try {
-        return ctx.llm.registration(textProvider().provider).adapter
+        return ctx.llm.registration(textProviderRoute()).adapter
       } catch {
         return undefined
       }
@@ -820,16 +1068,19 @@ export function apply(ctx, config = {}) {
       },
       providerRetryPolicy() {
         try {
-          return ctx.llm.registration(textProvider().provider).retryPolicy
+          return ctx.llm.registration(textProviderRoute()).retryPolicy
         } catch {
           return undefined
         }
       },
       async listModels() {
+        // In stealth mode this route is only a hidden alias for old sessions:
+        // the public deepseek-official route already shows the stock catalog.
+        if (stealthActive) return []
         const real = delegateAdapter()
         if (real === undefined) return []
         try {
-          const listed = await real.listModels(textProvider().provider)
+          const listed = await real.listModels(textProviderRoute())
           return listed
             .filter((model) => WRAPPER_MODEL_IDS.includes(model.id))
             .map((model) => ({
@@ -847,7 +1098,7 @@ export function apply(ctx, config = {}) {
         if (real === undefined) {
           throw new Error('vision-router: the text provider adapter is not available')
         }
-        const base = await real.resolveModel(textProvider().provider, model)
+        const base = await real.resolveModel(textProviderRoute(), model)
         return {
           ...base,
           provider: wrapperRoute(),
@@ -855,79 +1106,12 @@ export function apply(ctx, config = {}) {
           inputModalities: ['text', 'image'],
         }
       },
-      async *stream(options) {
-        const messages = options.messages ?? []
-        // The vision model is only the eyes: send it just the image plus the
-        // user's current question (intent-driven, like the vision-toolkit
-        // approach), cache the answer, and let the text provider run the whole
-        // agent turn on the substituted text. This keeps the vision cost at
-        // ~1.5k tokens per image instead of the full history.
-        const imageEntries = collectImageBlocks(messages)
-        const question = lastUserText(messages)
-        const currentIds = new Set()
-        for (let i = messages.length - 1; i >= 0; i--) {
-          const message = messages[i]
-          if (!message || message.role !== 'user' || !Array.isArray(message.content)) continue
-          for (const block of message.content) {
-            if (!block || block.type !== 'image') continue
-            const attachment = block.attachment || {}
-            const id = attachment.attachmentId || attachment.id
-            if (id) currentIds.add(id)
-          }
-          break
-        }
-        // Always re-look at the images of the current turn (the question may
-        // differ from what a cached description answered); history images reuse
-        // the cached description.
-        const pending = imageEntries.filter(
-          (entry) => !imageMemory.has(entry.id) || currentIds.has(entry.id),
-        )
-        if (pending.length > 0 && chainRoute() !== undefined) {
-          const instruction = question
-            ? `用户的问题是：「${question.slice(0, 1500)}」。请仔细查看图片，直接回答这个问题，` +
-              '并在回答中给出图片里与该问题相关的完整细节（图中的文字请尽量原样转述）。' +
-              '这段回答将提供给一个无法直接查看图片的文本模型使用；只输出回答本身，不要寒暄。'
-            : '请详细描述这张图片的内容：画面元素、图中的文字（尽量原样转述）、风格与整体含义。' +
-              '这段描述将提供给一个无法直接查看图片的文本模型使用，只输出描述本身，不要寒暄。'
-          await Promise.all(
-            pending.map(async (entry) => {
-              let text = ''
-              try {
-                for await (const chunk of ctx.llm.stream({
-                  provider: chainRoute(),
-                  model: `${pairs()[0].provider}/${pairs()[0].model}`,
-                  messages: [
-                    {
-                      role: 'user',
-                      content: [entry.block, { type: 'text', text: instruction }],
-                    },
-                  ],
-                  reasoningEffort: undefined,
-                  signal: options.signal,
-                })) {
-                  if (chunk && chunk.type === 'finish') {
-                    const kind = chunk.reason && chunk.reason.kind
-                    if (kind === 'error' || kind === 'aborted') break
-                  }
-                  if (chunk && typeof chunk.text === 'string') text += chunk.text
-                }
-              } catch (error) {
-                ctx.logger?.warn(
-                  'vision-router: describe failed for %s: %s',
-                  entry.name,
-                  error && error.message ? error.message : String(error),
-                )
-              }
-              if (text.trim()) imageMemory.set(entry.id, text.trim())
-            }),
-          )
-        }
-        yield* ctx.llm.stream({
-          ...options,
-          provider: textProvider().provider,
-          messages: replaceImageBlocksWithMemory(messages, imageMemory),
-        })
-      },
+      ...createWrapperStreamBody(ctx, {
+        imageMemory,
+        pairs,
+        chainRoute,
+        delegateProvider: textProviderRoute(),
+      }),
     }
     const handle = ctx.llm.registerAdapter([wrapperRoute()], wrapperAdapter)
     wrapperRegistered = true
@@ -941,11 +1125,6 @@ export function apply(ctx, config = {}) {
   // model-switch retry. To make fallback reliable, image turns are routed to
   // this chain adapter instead; it walks the configured providers itself and
   // only surfaces a failure once every model has failed.
-  const chainRoute = () => {
-    const value = current().chainRoute
-    return typeof value === 'string' && value !== '' ? value : undefined
-  }
-
   if (chainRoute() !== undefined && routingEnabled()) {
     const chainAdapter = {
       providerInfo(provider) {
