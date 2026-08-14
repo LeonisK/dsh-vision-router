@@ -39,6 +39,7 @@ export const Config = z.object({
   routing: z.boolean().default(true),
   reverseRouting: z.boolean().default(true),
   wrapperRoute: z.string().default('deepseek-vision'),
+  chainRoute: z.string().default('vision-chain'),
   textProvider: z
     .object({
       provider: z.string().default('deepseek-official'),
@@ -256,21 +257,36 @@ export function cacheKeyFor({ pairs, httpProviders, contentIds, wantJson, questi
 }
 
 /**
+ * Strip image blocks from messages so a text-only provider never sees them —
+ * the DeepSeek adapter throws on image content rather than dropping it.
+ */
+export function stripImageBlocks(messages) {
+  return (messages ?? []).map((message) => {
+    if (!message || !Array.isArray(message.content)) return message
+    if (!message.content.some((block) => block && block.type === 'image')) return message
+    return { ...message, content: message.content.filter((block) => !(block && block.type === 'image')) }
+  })
+}
+
+/**
  * Reverse routing: the session's ENTRY model must declare image input or the
  * harness prompt admission rejects image messages before any plugin runs.
- * When a request has no image and its provider is one of the configured
- * vision providers (or the wrapper route), rewrite it back to the text
- * provider so daily text turns run on DeepSeek.
+ * Text-only turns are sent back through the wrapper route (which strips
+ * images and delegates to the text provider), or directly to the text
+ * provider when the wrapper is disabled.
  */
-export function reverseRouteTarget(config, { pairs, wrapperRoute, textProvider, hasAdapter }) {
+export function reverseRouteTarget(config, { pairs, wrapperRoute, wrapperRegistered, textProvider, hasAdapter }) {
   if (config === undefined || config.provider === undefined) return undefined
   if (config.provider === textProvider.provider) return undefined
-  const isVisionEntry =
-    (pairs ?? []).some((pair) => pair.provider === config.provider) ||
-    (wrapperRoute !== undefined && config.provider === wrapperRoute)
+  if (wrapperRoute !== undefined && config.provider === wrapperRoute) return undefined
+  const isVisionEntry = (pairs ?? []).some((pair) => pair.provider === config.provider)
   if (!isVisionEntry) return undefined
-  if (!hasAdapter(textProvider.provider)) return undefined
-  return { provider: textProvider.provider, model: textProvider.model }
+  const target =
+    wrapperRegistered && wrapperRoute !== undefined
+      ? { provider: wrapperRoute, model: textProvider.model }
+      : textProvider
+  if (!hasAdapter(target.provider)) return undefined
+  return target
 }
 
 /**
@@ -470,6 +486,7 @@ export function apply(ctx, config = {}) {
     typeof config.wrapperRoute === 'string' && config.wrapperRoute !== ''
       ? config.wrapperRoute
       : undefined
+  let wrapperRegistered = false
   const textProvider = {
     provider:
       config.textProvider && typeof config.textProvider.provider === 'string' && config.textProvider.provider !== ''
@@ -563,11 +580,108 @@ export function apply(ctx, config = {}) {
         }
       },
       async *stream(options) {
-        yield* ctx.llm.stream({ ...options, provider: textProvider.provider })
+        yield* ctx.llm.stream({
+          ...options,
+          provider: textProvider.provider,
+          messages: stripImageBlocks(options.messages),
+        })
       },
     }
     const handle = ctx.llm.registerAdapter([wrapperRoute], wrapperAdapter)
+    wrapperRegistered = true
     ctx.effect(() => handle, 'vision-router: wrapper route')
+  }
+
+  // ── vision chain route: fallback under our own control ─────────────────────
+  //
+  // The agent-loop's request-error retry is owned by dsh-llm-retry, which sits
+  // OUTSIDE this plugin in the waterfall and can overrule a plugin's
+  // model-switch retry. To make fallback reliable, image turns are routed to
+  // this chain adapter instead; it walks the configured providers itself and
+  // only surfaces a failure once every model has failed.
+  const chainRoute =
+    typeof config.chainRoute === 'string' && config.chainRoute !== ''
+      ? config.chainRoute
+      : undefined
+
+  if (chainRoute !== undefined && routingEnabled) {
+    const chainAdapter = {
+      providerInfo(provider) {
+        return { id: provider, name: 'Vision Chain' }
+      },
+      providerRetryPolicy() {
+        return undefined
+      },
+      async listModels() {
+        return pairs.map((pair) => ({
+          provider: chainRoute,
+          id: `${pair.provider}/${pair.model}`,
+          name: `${pair.provider}/${pair.model}`,
+          inputModalities: ['text', 'image'],
+        }))
+      },
+      async resolveModel(provider, model) {
+        return {
+          provider: chainRoute,
+          id: model,
+          name: model,
+          inputModalities: ['text', 'image'],
+          context: { contextWindow: 128000 },
+        }
+      },
+      async *stream(options) {
+        const failures = []
+        for (const pair of pairs) {
+          let succeeded = false
+          let failed = false
+          let failMessage = 'unknown error'
+          try {
+            for await (const chunk of ctx.llm.stream({
+              ...options,
+              provider: pair.provider,
+              model: pair.model,
+              reasoningEffort: undefined,
+            })) {
+              if (chunk && chunk.type === 'finish') {
+                const kind = chunk.reason && chunk.reason.kind
+                if (kind === 'error' || kind === 'aborted') {
+                  failMessage =
+                    (chunk.reason && chunk.reason.failure && chunk.reason.failure.message) || kind
+                  failed = true
+                  break
+                }
+                // 'stop' / 'max-tokens' / 'tool-calls' are success.
+                succeeded = true
+                yield chunk
+                break
+              }
+              yield chunk
+            }
+          } catch (error) {
+            failed = true
+            failMessage = error && error.message ? error.message : String(error)
+          }
+          if (failed) {
+            failures.push(`${pair.provider}/${pair.model}: ${failMessage}`)
+            ctx.logger?.warn('vision-router: chain fallback -> %s', failMessage)
+            continue
+          }
+          return
+        }
+        yield {
+          type: 'finish',
+          reason: {
+            kind: 'error',
+            failure: {
+              message: `all vision models failed: ${failures.join(' | ')}`,
+              code: 'VISION_CHAIN_EXHAUSTED',
+            },
+          },
+        }
+      },
+    }
+    const handle = ctx.llm.registerAdapter([chainRoute], chainAdapter)
+    ctx.effect(() => handle, 'vision-router: chain route')
   }
   // session -> Map<attachmentId, ref> (uploaded images visible to vision_describe)
   const sessionAttachments = new WeakMap()
@@ -667,9 +781,6 @@ export function apply(ctx, config = {}) {
         turn: payload.turn,
         startIndex: events.length,
         hasImage,
-        routed: false,
-        failures: 0,
-        lastError: undefined,
       })
     }
     return decision
@@ -699,6 +810,7 @@ export function apply(ctx, config = {}) {
           const target = reverseRouteTarget(config0, {
             pairs,
             wrapperRoute,
+            wrapperRegistered,
             textProvider,
             hasAdapter: (provider) => adapterAvailable(ctx.llm, provider),
           })
@@ -708,53 +820,16 @@ export function apply(ctx, config = {}) {
         }
         return config0
       }
-      const current = pairs[state.failures]
-      if (current === undefined) {
-        const last = state.lastError ?? 'unknown error'
-        throw new Error(
-          `vision-router: every vision model failed for this turn (${last})${
-            failureAdvice(last) ? ` — ${failureAdvice(last)}` : ''
-          }.`,
-        )
+      // Route the image turn to the chain adapter (falls back under our own
+      // control), or directly to the first vision model when the chain route
+      // is disabled.
+      if (chainRoute !== undefined) {
+        if (config0.provider === chainRoute) return config0
+        return switchRoute(config0, chainRoute, `${pairs[0].provider}/${pairs[0].model}`)
       }
-      // Never route to a provider whose adapter is not registered in this
-      // deployment — falling through keeps the session on its own model
-      // instead of failing the turn with NO_ADAPTER.
-      if (!adapterAvailable(ctx.llm, current.provider)) return config0
+      const current = pairs[0]
       if (config0.provider === current.provider) return config0
-      state.routed = true
       return switchRoute(config0, current.provider, current.model)
-    })
-
-    ctx.on('agent/request-error', async (payload, next) => {
-      const result = await next()
-      const session = payload.agent && payload.agent.session
-      if (!session) return result
-      const state = turnState.get(session)
-      if (!state || state.turn !== payload.turn || !state.routed) return result
-      const current = pairs[state.failures]
-      if (current === undefined || payload.provider !== current.provider) return result
-      state.failures += 1
-      state.lastError =
-        payload.failure && payload.failure.message
-          ? payload.failure.message
-          : payload.failure && payload.failure.code
-            ? payload.failure.code
-            : 'unknown error'
-      if (state.failures < pairs.length) {
-        ctx.logger?.warn(
-          'vision-router: %s/%s failed, trying %s/%s next (%s)',
-          current.provider,
-          current.model,
-          pairs[state.failures].provider,
-          pairs[state.failures].model,
-          state.lastError,
-        )
-        // Force one more attempt on the next fallback even for codes the
-        // default retry policy would abort on (region blocks, quota, ToS).
-        return { kind: 'retry' }
-      }
-      return result
     })
   }
 

@@ -20,6 +20,7 @@ import {
   httpProvidersOf,
   DEFAULT_HTTP_PROVIDERS,
   reverseRouteTarget,
+  stripImageBlocks,
   switchRoute,
 } from '../index.js'
 
@@ -352,15 +353,48 @@ test('switchRoute drops reasoningEffort and keeps the rest', () => {
   assert.deepEqual(switchRoute({ provider: 'a', model: 'm' }, 'b', 'n'), { provider: 'b', model: 'n' })
 })
 
-test('reverseRouteTarget treats the wrapper route as a vision entry', () => {
-  const opts = {
+test('reverseRouteTarget keeps wrapper entries native and routes vision entries through the wrapper', () => {
+  const base = {
     pairs: [{ provider: 'openrouter', model: 'qwen-vl' }],
     wrapperRoute: 'deepseek-vision',
+    wrapperRegistered: true,
     textProvider: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
     hasAdapter: () => true,
   }
+  // wrapper entry handles text natively (strips images) — no rewrite
+  assert.equal(
+    reverseRouteTarget({ provider: 'deepseek-vision', model: 'deepseek-v4-pro' }, base),
+    undefined,
+  )
+  // openrouter entry -> text turns go through the wrapper (strips + delegates)
   assert.deepEqual(
-    reverseRouteTarget({ provider: 'deepseek-vision', model: 'deepseek-v4-pro' }, opts),
+    reverseRouteTarget({ provider: 'openrouter', model: 'qwen-vl' }, base),
+    { provider: 'deepseek-vision', model: 'deepseek-v4-pro' },
+  )
+  // wrapper disabled -> fall back to the text provider directly
+  assert.deepEqual(
+    reverseRouteTarget({ provider: 'openrouter', model: 'qwen-vl' }, {
+      ...base,
+      wrapperRoute: undefined,
+      wrapperRegistered: false,
+    }),
     { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
   )
+  // non-vision providers are never hijacked
+  assert.equal(
+    reverseRouteTarget({ provider: 'some-other', model: 'x' }, base),
+    undefined,
+  )
+})
+
+test('stripImageBlocks removes image blocks and leaves the rest', () => {
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image', attachment: { attachmentId: 'a' } }] },
+    { role: 'user', content: [{ type: 'text', text: 'plain' }] },
+  ]
+  const out = stripImageBlocks(messages)
+  assert.equal(out[0].content.length, 1)
+  assert.equal(out[0].content[0].type, 'text')
+  assert.equal(out[1], messages[1])
+  assert.deepEqual(stripImageBlocks(undefined), [])
 })
