@@ -1118,6 +1118,22 @@ function mockHarnessCtx({ stockRoute = false, config0 = {}, skills = false } = {
         return hit
       },
       registerConfigurableProviders: () => ({ replace: () => {} }),
+      listProviders() {
+        return [...registrations.entries()].map(([provider, registration]) => {
+          let info
+          try {
+            info = registration.adapter.providerInfo ? registration.adapter.providerInfo(provider) : undefined
+          } catch {
+            info = undefined
+          }
+          return { id: provider, name: info && info.name ? info.name : provider }
+        })
+      },
+      async listModels(provider) {
+        const hit = registrations.get(provider)
+        if (hit === undefined || typeof hit.adapter.listModels !== 'function') return []
+        return hit.adapter.listModels(provider)
+      },
       stream: async function* () {
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
@@ -1182,6 +1198,11 @@ test('wrappedProviders pre-fills the stock deepseek-official row out of the box'
   assert.deepEqual(Config({}).wrappedProviders, [{ provider: 'deepseek-official', models: [] }])
 })
 
+
+test('autoWrapProviders defaults to true', () => {
+  assert.equal(Config({}).autoWrapProviders, true)
+  assert.equal(Config({ autoWrapProviders: false }).autoWrapProviders, false)
+})
 test('the vision chain ships with the built-in free model as its first row', () => {
   assert.deepEqual(Config({}).providers, [
     { provider: 'vision-http', model: 'ovh/Qwen2.5-VL-72B-Instruct', fallbacks: [] },
@@ -1345,6 +1366,79 @@ test('apply registers the vision-tools skill with source and content', () => {
   assert.ok(skill.content.includes('vision_describe') || skill.content.includes('vision_ground'))
 })
 
+test('auto-wrap discovers existing providers including native vision models', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  const mixed = {
+    providerInfo: (p) => ({ id: p, name: 'MiniMax' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'minimax-m2.7', name: 'MiniMax M2.7', inputModalities: ['text'] },
+      { provider: p, id: 'minimax-vision-native', name: 'MiniMax Vision', inputModalities: ['text', 'image'] },
+    ],
+    resolveModel: async (p, m) => ({
+      provider: p,
+      id: m,
+      name: m,
+      inputModalities: m === 'minimax-vision-native' ? ['text', 'image'] : ['text'],
+    }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['minimax'], mixed)
+  apply(ctx, Config({}))
+  const twin = adapters.get('minimax-vision')
+  assert.ok(twin, 'expected an automatically discovered minimax-vision twin')
+  const listed = await twin.listModels('minimax-vision')
+  assert.deepEqual(listed.map((m) => m.id), ['minimax-m2.7', 'minimax-vision-native'])
+  for (const model of listed) assert.deepEqual(model.inputModalities, ['text', 'image'])
+})
+
+test('auto-wrap follows providers that become live after plugin apply', async () => {
+  const { ctx, adapters, captured } = mockHarnessCtx()
+  apply(ctx, Config({}))
+  assert.equal(adapters.has('opencode-go-vision'), false)
+  const thirdParty = {
+    providerInfo: (p) => ({ id: p, name: 'Opencode' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', inputModalities: ['text'] },
+    ],
+    resolveModel: async (p, m) => ({ provider: p, id: m, name: m, inputModalities: ['text'] }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['opencode-go'], thirdParty)
+  const fire = captured.on.get('llm/adapters-updated')
+  assert.ok(fire)
+  fire()
+  assert.ok(adapters.has('opencode-go-vision'), 'expected the live provider to be auto-wrapped')
+  const listed = await adapters.get('opencode-go-vision').listModels('opencode-go-vision')
+  assert.deepEqual(listed.map((m) => m.id), ['deepseek-v4-flash'])
+})
+
+test('auto-wrap can be disabled while explicit wrappedProviders still work', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  const thirdParty = {
+    providerInfo: (p) => ({ id: p, name: p }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [{ provider: p, id: 'm1', name: 'm1', inputModalities: ['text'] }],
+    resolveModel: async (p, m) => ({ provider: p, id: m, name: m, inputModalities: ['text'] }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['minimax'], thirdParty)
+  ctx.llm.registerAdapter(['opencode-go'], thirdParty)
+  apply(ctx, Config({
+    autoWrapProviders: false,
+    wrappedProviders: [{ provider: 'opencode-go', models: [] }],
+  }))
+  assert.equal(adapters.has('minimax-vision'), false)
+  assert.ok(adapters.has('opencode-go-vision'))
+})
+
 test('apply registers an image-capable twin route for wrappedProviders', async () => {
   const { ctx, adapters } = mockHarnessCtx()
   // register a third-party text-only provider in the mock before apply
@@ -1423,6 +1517,73 @@ test('twin route registers before its source adapter appears (live provider regi
   for (const model of listed) assert.deepEqual(model.inputModalities, ['text', 'image'])
   const resolved = await twin.resolveModel('opencode-go-vision', 'deepseek-v4-flash')
   assert.deepEqual(resolved.inputModalities, ['text', 'image'])
+})
+
+test('auto-wrap also exposes a twin for an already image-capable GLM model', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  const glm = {
+    providerInfo: (p) => ({ id: p, name: 'Zhipu GLM' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'glm-4.6v-flash', name: 'GLM-4.6V-Flash', inputModalities: ['text', 'image'] },
+      { provider: p, id: 'glm-4v-flash', name: 'GLM-4V-Flash', inputModalities: ['text', 'image'] },
+    ],
+    resolveModel: async (p, m) => ({
+      provider: p, id: m, name: m, inputModalities: ['text', 'image'], context: { contextWindow: 100000 },
+    }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['zhipu'], glm)
+  apply(ctx, Config({ autoWrapProviders: true }))
+  assert.ok(adapters.has('zhipu-vision'), 'expected Zhipu GLM + auto-vision twin')
+  const listed = await adapters.get('zhipu-vision').listModels('zhipu-vision')
+  assert.deepEqual(listed.map((m) => m.id), ['glm-4.6v-flash', 'glm-4v-flash'])
+  for (const model of listed) assert.deepEqual(model.inputModalities, ['text', 'image'])
+})
+
+test('native multimodal twin preserves original image blocks instead of forcing tool conversion', async () => {
+  const { ctx, adapters } = mockHarnessCtx()
+  const glm = {
+    providerInfo: (p) => ({ id: p, name: 'Zhipu GLM' }),
+    providerRetryPolicy: () => 'retry',
+    listModels: async (p) => [
+      { provider: p, id: 'glm-4.6v-flash', name: 'GLM-4.6V-Flash', inputModalities: ['text', 'image'] },
+    ],
+    resolveModel: async (p, m) => ({
+      provider: p, id: m, name: m, inputModalities: ['text', 'image'], context: { contextWindow: 100000 },
+    }),
+    stream: async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  ctx.llm.registerAdapter(['zhipu'], glm)
+  apply(ctx, Config({ autoWrapProviders: true }))
+  const twin = adapters.get('zhipu-vision')
+  assert.ok(twin)
+
+  let delegateCall
+  ctx.llm.stream = async function* (options) {
+    delegateCall = options
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'image', attachment: { attachmentId: 'glm-img', name: 'glm.png' } },
+        { type: 'text', text: '直接看看这张图' },
+      ],
+    },
+  ]
+  for await (const _c of twin.stream({ provider: 'zhipu-vision', model: 'glm-4.6v-flash', messages })) {
+    /* drain */
+  }
+  assert.equal(delegateCall.provider, 'zhipu')
+  assert.strictEqual(delegateCall.messages, messages)
+  assert.equal(delegateCall.messages[0].content.filter((b) => b.type === 'image').length, 1)
+  assert.equal(delegateCall.messages[0].content[0].attachment.attachmentId, 'glm-img')
 })
 
 test('twin sync is idempotent across llm/adapters-updated events', async () => {
