@@ -19,11 +19,14 @@ import {
   providersOf,
   rewriteImageBlocks,
   rewriteImagesDeep,
+  sanitizeToolResultImages,
+  renderVisionPresent,
   extractJson,
   createCache,
   downscaleImage,
   toOpenAIContent,
   toRealPath,
+  chromiumCandidates,
   callOpenAICompatible,
   cacheKeyFor,
   adapterAvailable,
@@ -42,7 +45,6 @@ import {
   launchEnvironmentLike,
   createNativeDeepSeekAdapter,
   createStealthAdapter,
-  modelInfoAcceptsImages,
   estimateTokens,
   estimateMessages,
   trimMessagesToBudget,
@@ -70,13 +72,6 @@ test('sniffMediaType detects formats from magic bytes', () => {
   assert.equal(sniffMediaType(gif), 'image/gif')
   assert.equal(sniffMediaType(Buffer.from('000102030405060708090a0b', 'hex')), undefined)
   assert.equal(sniffMediaType(Buffer.alloc(4)), undefined)
-})
-
-test('modelInfoAcceptsImages requires an explicit image modality', () => {
-  assert.equal(modelInfoAcceptsImages({ inputModalities: ['text', 'image'] }), true)
-  assert.equal(modelInfoAcceptsImages({ inputModalities: ['text'] }), false)
-  assert.equal(modelInfoAcceptsImages({}), false)
-  assert.equal(modelInfoAcceptsImages(undefined), false)
 })
 
 test('mediaTypeOf maps extensions', () => {
@@ -1894,6 +1889,91 @@ test('toRealPath converts fs resolve results to real paths', () => {
   assert.equal(toRealPath({}, { targetKey: '/abs/page.html' }), '/abs/page.html')
   assert.equal(toRealPath(null, { targetKey: '/abs/page.html' }), '/abs/page.html')
   assert.equal(toRealPath({}, { targetKey: '' }), '[object Object]')
+})
+
+
+test('vision_present renders a durable image for UI and sanitizer removes it from text-model input', () => {
+  const attachment = {
+    attachmentId: 'present-1',
+    mediaType: 'image/png',
+    bytes: 123,
+    width: 320,
+    height: 200,
+    name: 'Preview',
+  }
+  const rendered = renderVisionPresent({
+    path: '/workspace/present.png',
+    label: 'Preview',
+    width: 320,
+    height: 200,
+    bytes: 123,
+    safePresentation: true,
+    attachment,
+  })
+  assert.equal(rendered.length, 2)
+  assert.equal(rendered[1].type, 'image')
+  assert.equal(rendered[1].attachment, attachment)
+  assert.match(rendered[0].text, /present-1/)
+
+  const wrapped = [{
+    role: 'user',
+    content: [{ type: 'tool-result', toolCallId: 'call-1', content: rendered }],
+  }]
+  const sanitized = sanitizeToolResultImages(wrapped)
+  assert.equal(sanitized.changed, true)
+  assert.equal(sanitized.messages[0].content[0].content.some((block) => block.type === 'image'), false)
+  assert.match(sanitized.messages[0].content[0].content.at(-1).text, /present-1/)
+})
+
+test('sanitizeToolResultImages removes nested read_image-style images but preserves user images', () => {
+  const userRef = { attachmentId: 'user-1', name: 'upload.png' }
+  const toolRef = { attachmentId: 'tool-1', name: 'generated.png' }
+  const input = [{
+    role: 'user',
+    content: [
+      { type: 'image', attachment: userRef },
+      {
+        type: 'tool-result',
+        content: [
+          { type: 'text', text: 'preview' },
+          { type: 'image', attachment: toolRef },
+        ],
+      },
+    ],
+  }]
+  const out = sanitizeToolResultImages(input)
+  assert.equal(out.changed, true)
+  assert.equal(out.messages[0].content[0].type, 'image')
+  const nested = out.messages[0].content[1].content
+  assert.equal(nested.some((block) => block.type === 'image'), false)
+  assert.match(nested[1].text, /tool-1/)
+  assert.match(nested[1].text, /vision_present/)
+})
+
+test('sanitizeToolResultImages is identity-preserving when there is no nested image', () => {
+  const input = [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }]
+  const out = sanitizeToolResultImages(input)
+  assert.equal(out.changed, false)
+  assert.equal(out.messages, input)
+})
+
+test('chromiumCandidates covers Windows, macOS, Linux and explicit overrides', () => {
+  const win = chromiumCandidates({
+    CHROME_PATH: 'D:\\Portable\\chrome.exe',
+    PROGRAMFILES: 'C:\\Program Files',
+    'PROGRAMFILES(X86)': 'C:\\Program Files (x86)',
+    LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+  }, 'win32')
+  assert.equal(win[0], 'D:\\Portable\\chrome.exe')
+  assert.ok(win.some((value) => value.endsWith('Google\\Chrome\\Application\\chrome.exe')))
+  assert.ok(win.some((value) => value.endsWith('Microsoft\\Edge\\Application\\msedge.exe')))
+
+  const mac = chromiumCandidates({}, 'darwin')
+  assert.ok(mac.some((value) => value.includes('Google Chrome.app')))
+
+  const linux = chromiumCandidates({}, 'linux')
+  assert.ok(linux.includes('/usr/bin/google-chrome'))
+  assert.ok(linux.includes('/usr/bin/chromium'))
 })
 
 
