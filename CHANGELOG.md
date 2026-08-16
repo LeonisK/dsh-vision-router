@@ -3,6 +3,13 @@
 每个版本的中英双语发布说明（GitHub Release 工作流从这里取对应版本的段落，发布前必须先写好本节）｜
 Bilingual (Chinese + English) release notes for every version — the GitHub Release workflow pulls the matching section from this file, so it must be filled in before tagging.
 
+## v1.2.4
+
+### 修复 / Fixed
+
+- **`progressiveTools` 默认改为关闭，识图轮不再打穿前缀缓存（#81）**：渐进挂载会在图片轮临时注册 11 个深看工具，工具 schema 属于请求前缀，列表突变导致长会话的整段历史缓存全部失效、按全价重新计费（实测识图单轮从约 ¥0.016 飙到 ¥0.4~1.0）。现在默认常驻挂载（`progressiveTools: false`）：工具列表从头到尾稳定、缓存持续命中，识图轮费用回到普通文本轮量级（实测约 ¥0.027）。`progressiveTools: true` 仍可退回旧的渐进行为；`vision-tools` 技能现在两种模式下都注册，展示规则（`vision_present` 强制展示）在纯文字轮始终生效。
+- **`progressiveTools` now defaults to off so image turns stop busting the prompt-prefix cache (#81)**: progressive mounting registered the eleven deep tools only on image turns, and since tool schemas are part of the request prefix, the mutation invalidated the entire cached history of long conversations and re-billed it in full (measured: an image turn jumped from ~¥0.016 to ¥0.4–1.0). Tools are now resident by default (`progressiveTools: false`): the tool list is stable across turns, the cache stays warm, and image turns cost the same order as plain text turns (measured ~¥0.027). `progressiveTools: true` restores the old progressive behavior; the `vision-tools` skill is registered in both modes so the presentation rules (mandatory `vision_present`) keep applying on text-only turns.
+
 ## v1.2.3
 
 ### 修复 / Fixed

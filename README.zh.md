@@ -129,7 +129,7 @@ opencode-go + 自动识图       ← 发图片时选这个
 - **自动降级 + 分类报错。** 地区限制、ToS 风控、402 额度、429 限流（尊重 Retry-After 退避重试）、上下文超长、网络故障——链路逐供应商尝试，全部失败才报错并给出可操作的建议。
 - **图片记忆。** 视觉答案按附件内容哈希缓存；后续文字轮用记录的描述替换历史图片（标注为不可信证据），DeepSeek 真正“记得”之前发过的图，且不重复消耗视觉调用。
 - **可验证的像素闭环。** 参照图 → `vision_html_screenshot` → `vision_pixel_diff`（差异率 + 红色热力图 + 最差区域排行）→ 修复 → 再对比，直到差异收敛。UI 还原从“目测”变成“实测”。
-- **渐进式 schema 暴露。** 平时只有一个零参引导工具 `vision_activate`；图片轮自动挂载全部 11 个深看工具（附一次性使用提示），并为纯文字轮注册 `vision-tools` 技能。
+- **稳定前缀的工具暴露。** 默认常驻挂载全部深看工具，工具列表从头到尾稳定，LLM 前缀缓存持续命中——图片轮不再打穿缓存、按全量历史重复计费；可选 `progressiveTools: true` 退回渐进挂载（平时只有零参引导工具 `vision_activate`，图片轮再挂载），并始终为纯文字轮注册 `vision-tools` 技能。
 - **选择性代理。** 只有配置的视觉供应商域名走本地代理；DeepSeek 保持直连。
 
 ### 像素闭环实测
@@ -150,7 +150,7 @@ Agent 仅根据参考图复刻 UI，再用 `vision_pixel_diff` 验证最终结�
 
 ## 工具
 
-11 个深看工具在图片轮自动挂载（`autoActivateOnImage`）；文字轮可通过 `vision_activate` 或 `/vision-tools` 技能挂载。全部基于 sharp / potrace / tesseract / 系统 Chrome——无 Python：
+11 个深看工具默认随会话常驻（`progressiveTools: false`），任何轮次可直接调用；若开启渐进挂载（`progressiveTools: true`），则图片轮自动挂载（`autoActivateOnImage`），文字轮可通过 `vision_activate` 或 `/vision-tools` 技能挂载。全部基于 sharp / potrace / tesseract / 系统 Chrome——无 Python：
 
 <p align="center">
   <img src="assets/vision-tools-zh.svg" width="100%" alt="DSH Vision Router 的 11 个视觉工具。" />
@@ -266,7 +266,7 @@ Web 配置页在 **设置 → 插件 → 插件配置** 下注册「视觉路由
 | `wrapperRoute` / `chainRoute` | `deepseek-vision` / `vision-chain` | 准入包装路由名 / 降级链路由名（置空关闭） |
 | `stealth` | `false` | 接管官方 `deepseek-official` 路由（仅官方行；自定义路由默认由自动包装处理） |
 | `textProvider` | `deepseek-official` / `deepseek-v4-pro` | 负责思考的模型（你的日常模型） |
-| `tool` / `progressiveTools` / `autoActivateOnImage` | `true` ×3 | 视觉工具开关 / 渐进式挂载 / 图片轮自动挂载 |
+| `tool` / `progressiveTools` / `autoActivateOnImage` | `true` / `false` / `true` | 视觉工具开关 / 渐进式挂载（默认关：常驻保前缀缓存命中，见 issue #81） / 图片轮自动挂载 |
 | `rewriteImages` | `true` | 模型输入层改写图片块（缓存描述或工具提示标记）；界面日志保留图片 |
 | `downscale` / `downscaleMaxPixels` | `true` / `4000000` | 调用前压缩及其像素预算（延迟保护） |
 | `cache` / `cacheTtlSeconds` / `cacheMaxEntries` | `true` / `3600` / `200` | 视觉答案缓存 |

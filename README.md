@@ -129,7 +129,7 @@ The built-in anonymous OVH vision fallback is already configured, so normal imag
 - **Automatic failover with classified errors.** Region blocks, ToS filtering, 402 quota, 429 rate limits (with Retry-After backoff), context overflow, network failures — the chain walks providers one by one and only reports after all of them failed, with actionable advice.
 - **Image memory.** Vision answers are cached by attachment content hash; later text turns substitute the recorded description (marked as untrusted evidence), so DeepSeek genuinely remembers earlier images without re-spending vision calls.
 - **A verifiable pixel loop.** Reference → `vision_html_screenshot` → `vision_pixel_diff` (ratio + red heatmap + worst-region ranking) → fix → repeat until the mismatch converges. UI restoration becomes measurable instead of eyeballed.
-- **Progressive schema exposure.** Only a zero-arg `vision_activate` bootstrap is always visible; image turns auto-mount all eleven deep tools with a one-time usage note, and a `vision-tools` skill is registered for text-only turns.
+- **Stable-prefix tool exposure.** All deep tools are resident by default, so the tool list never changes across turns and the LLM prompt-prefix cache stays warm — image turns no longer bust the cache and re-bill the whole history. `progressiveTools: true` opts back into progressive mounting (only a zero-arg `vision_activate` bootstrap until the first image turn), and a `vision-tools` skill is always registered for text-only turns.
 - **Selective proxy.** Only the configured vision provider hosts go through your local proxy; DeepSeek stays direct.
 
 ### Pixel loop in practice
@@ -150,7 +150,7 @@ The vision model is **only the eyes**; DeepSeek is **always the brain**. An imag
 
 ## Tools
 
-All eleven deep tools mount automatically on image turns (`autoActivateOnImage`); text turns can mount them via `vision_activate` or the `/vision-tools` skill. Built on sharp / potrace / tesseract / system Chrome — no Python:
+All eleven deep tools are resident for the whole session by default (`progressiveTools: false`) and callable on any turn; with progressive mounting (`progressiveTools: true`) they mount automatically on image turns (`autoActivateOnImage`) and text turns can mount them via `vision_activate` or the `/vision-tools` skill. Built on sharp / potrace / tesseract / system Chrome — no Python:
 
 <p align="center">
   <img src="assets/vision-tools.svg" width="100%" alt="Eleven vision tools available in DSH Vision Router." />
@@ -266,7 +266,7 @@ Everything is optional; defaults work out of the box. Edit via the Web card or a
 | `wrapperRoute` / `chainRoute` | `deepseek-vision` / `vision-chain` | admission wrapper route name / fallback chain route name (empty disables) |
 | `stealth` | `false` | take over the official `deepseek-official` route (official row only; custom routes are auto-wrapped by default) |
 | `textProvider` | `deepseek-official` / `deepseek-v4-pro` | the model that reasons (your daily model) |
-| `tool` / `progressiveTools` / `autoActivateOnImage` | `true` ×3 | vision tools on / progressive mounting / auto-mount on image turns |
+| `tool` / `progressiveTools` / `autoActivateOnImage` | `true` / `false` / `true` | vision tools on / progressive mounting (off by default: resident tools keep the prompt-prefix cache warm, see #81) / auto-mount on image turns |
 | `rewriteImages` | `true` | rewrite image blocks in the model input (cached description or tool-hint marker); the UI log keeps images |
 | `downscale` / `downscaleMaxPixels` | `true` / `4000000` | pre-call downscale and its pixel budget (latency guard) |
 | `cache` / `cacheTtlSeconds` / `cacheMaxEntries` | `true` / `3600` / `200` | vision answer cache |
